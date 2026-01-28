@@ -3219,6 +3219,8 @@ export default {
     noActiveSubscriptions: '暂无有效订阅',
     noActiveSubscriptionsDesc: '您没有任何有效订阅。请联系管理员获取订阅。',
     failedToLoad: '加载订阅失败',
+    today: '今天',
+    tomorrow: '明天',
     status: {
       active: '有效',
       expired: '已过期',
