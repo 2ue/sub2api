@@ -23,17 +23,24 @@ const getInjectedAppConfig = () => {
   return window.__APP_CONFIG__ ?? null
 }
 
+export const ensureRequiredTablePageSizeOptions = (options: unknown[]): number[] => {
+  return Array.from(
+    new Set(
+      [
+        ...DEFAULT_TABLE_PAGE_SIZE_OPTIONS,
+        ...options
+          .map((value) => sanitizePageSize(value))
+          .filter((value): value is number => value !== null)
+      ]
+    )
+  ).sort((a, b) => a - b)
+}
+
 const getSanitizedConfiguredOptions = (): number[] => {
   const configured = getInjectedAppConfig()?.table_page_size_options
   if (!Array.isArray(configured)) return []
 
-  return Array.from(
-    new Set(
-      configured
-        .map((value) => sanitizePageSize(value))
-        .filter((value): value is number => value !== null)
-    )
-  ).sort((a, b) => a - b)
+  return ensureRequiredTablePageSizeOptions(configured)
 }
 
 const normalizePageSizeToOptions = (value: number, options: number[]): number => {

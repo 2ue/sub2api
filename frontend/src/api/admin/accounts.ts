@@ -392,6 +392,82 @@ export async function bulkUpdate(
   return data
 }
 
+export interface OpenAISpecial429AccountSummary {
+  account_id: number
+  name: string
+}
+
+export interface OpenAISpecial429SkippedItem {
+  account_id: number
+  name?: string
+  reason: string
+}
+
+export interface OpenAISpecial429ProbeAccountResult {
+  account_id: number
+  name: string
+  success: boolean
+  message?: string
+}
+
+export interface OpenAISpecial429ToggleAccountResult {
+  account_id: number
+  name: string
+  success: boolean
+  error?: string
+}
+
+export interface OpenAISpecial429ProbeResponse {
+  requested_count: number
+  eligible_count: number
+  probed_count: number
+  callable_count: number
+  callable_ids: number[]
+  callable_accounts: OpenAISpecial429AccountSummary[]
+  skipped: OpenAISpecial429SkippedItem[]
+  results: OpenAISpecial429ProbeAccountResult[]
+}
+
+export interface OpenAISpecial429ToggleResponse {
+  requested_count: number
+  target_count: number
+  success: number
+  failed: number
+  success_ids: number[]
+  failed_ids: number[]
+  skipped: OpenAISpecial429SkippedItem[]
+  results: OpenAISpecial429ToggleAccountResult[]
+}
+
+export async function probeOpenAISpecial429(accountIds: number[]): Promise<OpenAISpecial429ProbeResponse> {
+  const { data } = await apiClient.post<OpenAISpecial429ProbeResponse>('/admin/accounts/batch-probe-openai-special-429', {
+    account_ids: accountIds
+  }, {
+    timeout: 180000
+  })
+  return data
+}
+
+export async function enableOpenAISpecial429(
+  accountIds: number[],
+  options?: {
+    concurrency?: number
+  }
+): Promise<OpenAISpecial429ToggleResponse> {
+  const { data } = await apiClient.post<OpenAISpecial429ToggleResponse>('/admin/accounts/batch-enable-openai-special-429', {
+    account_ids: accountIds,
+    concurrency: options?.concurrency
+  })
+  return data
+}
+
+export async function disableOpenAISpecial429(accountIds: number[]): Promise<OpenAISpecial429ToggleResponse> {
+  const { data } = await apiClient.post<OpenAISpecial429ToggleResponse>('/admin/accounts/batch-disable-openai-special-429', {
+    account_ids: accountIds
+  })
+  return data
+}
+
 /**
  * Get account today statistics
  * @param id - Account ID
@@ -656,6 +732,9 @@ export const accountsAPI = {
   batchCreate,
   batchUpdateCredentials,
   bulkUpdate,
+  probeOpenAISpecial429,
+  enableOpenAISpecial429,
+  disableOpenAISpecial429,
   previewFromCrs,
   syncFromCrs,
   exportData,

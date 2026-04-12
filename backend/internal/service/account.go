@@ -1235,6 +1235,71 @@ func (a *Account) GetOpenAISpecial429EscalationThreshold() int {
 	return value
 }
 
+// HasActiveOpenAICodexWeeklyLimit 返回 OpenAI OAuth 账号是否处于仍未重置的 7d exhausted 状态。
+func (a *Account) HasActiveOpenAICodexWeeklyLimit(now time.Time) bool {
+	return a.hasActiveOpenAICodexLimit("7d", now)
+}
+
+// HasActiveOpenAICodexFiveHourLimit 返回 OpenAI OAuth 账号是否处于仍未重置的 5h exhausted 状态。
+func (a *Account) HasActiveOpenAICodexFiveHourLimit(now time.Time) bool {
+	return a.hasActiveOpenAICodexLimit("5h", now)
+}
+
+// IsOpenAISpecial429ProbeCandidate 返回账号是否满足“周限但未触发 5h，且尚未开启特殊 429”探测条件。
+func (a *Account) IsOpenAISpecial429ProbeCandidate(now time.Time) bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.IsOpenAISpecialRateLimitEnabled() {
+		return false
+	}
+	return a.HasActiveOpenAICodexWeeklyLimit(now) && !a.HasActiveOpenAICodexFiveHourLimit(now)
+}
+
+func (a *Account) hasActiveOpenAICodexLimit(window string, now time.Time) bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	var (
+		usedPercentKey string
+		resetAfterKey  string
+		resetAtKey     string
+	)
+
+	switch window {
+	case "5h":
+		usedPercentKey = "codex_5h_used_percent"
+		resetAfterKey = "codex_5h_reset_after_seconds"
+		resetAtKey = "codex_5h_reset_at"
+	case "7d":
+		usedPercentKey = "codex_7d_used_percent"
+		resetAfterKey = "codex_7d_reset_after_seconds"
+		resetAtKey = "codex_7d_reset_at"
+	default:
+		return false
+	}
+
+	if a.getExtraFloat64(usedPercentKey) < 100-1e-9 {
+		return false
+	}
+
+	resetAt := a.getExtraTime(resetAtKey)
+	if resetAt.IsZero() {
+		resetAfterSeconds := a.getExtraInt(resetAfterKey)
+		if resetAfterSeconds <= 0 {
+			return false
+		}
+		base := now
+		if updatedAt := a.getExtraTime("codex_usage_updated_at"); !updatedAt.IsZero() {
+			base = updatedAt
+		}
+		resetAt = base.Add(time.Duration(resetAfterSeconds) * time.Second)
+	}
+
+	return now.Before(resetAt)
+}
+
 // WindowCostSchedulability 窗口费用调度状态
 type WindowCostSchedulability int
 

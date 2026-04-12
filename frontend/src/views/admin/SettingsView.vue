@@ -2540,6 +2540,7 @@ import ImageUpload from '@/components/common/ImageUpload.vue'
 import BackupSettings from '@/views/admin/BackupView.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import { ensureRequiredTablePageSizeOptions } from '@/utils/tablePreferences'
 import { useAppStore } from '@/stores'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
 import {
@@ -2899,7 +2900,7 @@ function removeEndpoint(index: number) {
 }
 
 function formatTablePageSizeOptions(options: number[]): string {
-  return options.join(', ')
+  return ensureRequiredTablePageSizeOptions(options).join(', ')
 }
 
 function parseTablePageSizeOptionsInput(raw: string): number[] | null {
@@ -2924,7 +2925,7 @@ function parseTablePageSizeOptionsInput(raw: string): number[] | null {
     return null
   }
 
-  return deduped
+  return ensureRequiredTablePageSizeOptions(deduped)
 }
 
 async function loadSettings() {

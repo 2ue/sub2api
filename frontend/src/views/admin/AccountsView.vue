@@ -141,7 +141,18 @@
         </div>
       </template>
       <template #table>
-        <AccountBulkActionsBar :selected-ids="selIds" @delete="handleBulkDelete" @reset-status="handleBulkResetStatus" @refresh-token="handleBulkRefreshToken" @edit="showBulkEdit = true" @clear="clearSelection" @select-page="selectPage" @toggle-schedulable="handleBulkToggleSchedulable" />
+        <AccountBulkActionsBar
+          :selected-ids="selIds"
+          @delete="handleBulkDelete"
+          @reset-status="handleBulkResetStatus"
+          @refresh-token="handleBulkRefreshToken"
+          @probe-openai-special-429="handleBulkProbeOpenAISpecial429"
+          @disable-openai-special-429="handleBulkDisableOpenAISpecial429"
+          @edit="showBulkEdit = true"
+          @clear="clearSelection"
+          @select-page="selectPage"
+          @toggle-schedulable="handleBulkToggleSchedulable"
+        />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
           :columns="cols"
@@ -300,6 +311,44 @@
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
+    <ConfirmDialog
+      :show="showOpenAISpecial429EnableDialog"
+      :title="t('admin.accounts.bulkActions.enableOpenAISpecial429DialogTitle')"
+      :message="openAISpecial429EnableSummary"
+      :confirm-text="t('common.confirm')"
+      :cancel-text="t('common.cancel')"
+      @confirm="confirmBulkEnableOpenAISpecial429"
+      @cancel="closeOpenAISpecial429EnableDialog"
+    >
+      <div class="space-y-3">
+        <p class="text-sm font-medium text-gray-800 dark:text-gray-100">
+          {{ t('admin.accounts.bulkActions.enableOpenAISpecial429Confirm', { count: pendingOpenAISpecial429EnableAccounts.length }) }}
+        </p>
+        <div
+          v-if="pendingOpenAISpecial429EnableAccounts.length > 0"
+          class="max-h-40 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+        >
+          <div class="whitespace-pre-line">{{ formatOpenAISpecial429ConfirmList(pendingOpenAISpecial429EnableAccounts, 100) }}</div>
+        </div>
+        <label class="flex flex-col gap-1">
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
+            {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyLabel') }}
+          </span>
+          <input
+            v-model="openAISpecial429EnableConcurrency"
+            type="number"
+            min="1"
+            step="1"
+            inputmode="numeric"
+            class="input"
+            :placeholder="t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyPlaceholder')"
+          />
+          <span class="text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyHint') }}
+          </span>
+        </label>
+      </div>
+    </ConfirmDialog>
     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
   </AppLayout>
@@ -341,6 +390,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
@@ -376,6 +426,7 @@ const includeProxyOnExport = ref(true)
 const showBulkEdit = ref(false)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
+const showOpenAISpecial429EnableDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
 const showStats = ref(false)
@@ -384,6 +435,11 @@ const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
+const pendingOpenAISpecial429Selection = ref<number[]>([])
+const pendingOpenAISpecial429EnableIDs = ref<number[]>([])
+const pendingOpenAISpecial429EnableAccounts = ref<Array<{ account_id: number; name: string }>>([])
+const openAISpecial429EnableSummary = ref('')
+const openAISpecial429EnableConcurrency = ref('')
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
@@ -1053,7 +1109,131 @@ const handleBulkRefreshToken = async () => {
     reload()
   } catch (error) {
     console.error('Failed to bulk refresh token:', error)
-    appStore.showError(String(error))
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  }
+}
+const formatOpenAISpecial429ConfirmList = (accounts: Array<{ name: string }>, maxNames: number = 12) => {
+  const names = accounts
+    .map((account) => account.name?.trim())
+    .filter((name): name is string => Boolean(name))
+
+  if (!names.length) return ''
+
+  const preview = names.slice(0, maxNames).join('\n')
+  if (names.length <= maxNames) return preview
+  return `${preview}\n... (+${names.length - maxNames})`
+}
+const closeOpenAISpecial429EnableDialog = () => {
+  showOpenAISpecial429EnableDialog.value = false
+  pendingOpenAISpecial429Selection.value = []
+  pendingOpenAISpecial429EnableIDs.value = []
+  pendingOpenAISpecial429EnableAccounts.value = []
+  openAISpecial429EnableSummary.value = ''
+  openAISpecial429EnableConcurrency.value = ''
+}
+const confirmBulkEnableOpenAISpecial429 = async () => {
+  const accountIds = [...pendingOpenAISpecial429EnableIDs.value]
+  const selectedIds = [...pendingOpenAISpecial429Selection.value]
+  if (!accountIds.length) {
+    appStore.showWarning(t('admin.accounts.bulkActions.enableOpenAISpecial429NoTarget'))
+    closeOpenAISpecial429EnableDialog()
+    await reload()
+    return
+  }
+
+  const rawConcurrency = openAISpecial429EnableConcurrency.value.trim()
+  let concurrency: number | undefined
+  if (rawConcurrency !== '') {
+    const parsed = Number(rawConcurrency)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      appStore.showWarning(t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyInvalid'))
+      return
+    }
+    concurrency = parsed
+  }
+
+  try {
+    const enableResult = await adminAPI.accounts.enableOpenAISpecial429(accountIds, { concurrency })
+    if (enableResult.target_count === 0) {
+      appStore.showWarning(t('admin.accounts.bulkActions.enableOpenAISpecial429NoTarget'))
+      closeOpenAISpecial429EnableDialog()
+      await reload()
+      return
+    }
+    if (enableResult.failed > 0) {
+      appStore.showError(t('admin.accounts.bulkActions.enableOpenAISpecial429Partial', {
+        success: enableResult.success,
+        failed: enableResult.failed
+      }))
+      setSelectedIds(enableResult.failed_ids.length > 0 ? enableResult.failed_ids : selectedIds)
+    } else {
+      appStore.showSuccess(t('admin.accounts.bulkActions.enableOpenAISpecial429Success', { count: enableResult.success }))
+      clearSelection()
+    }
+    closeOpenAISpecial429EnableDialog()
+    await reload()
+  } catch (error) {
+    console.error('Failed to enable OpenAI special 429 mode:', error)
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  }
+}
+const handleBulkProbeOpenAISpecial429 = async () => {
+  const accountIds = [...selIds.value]
+  if (!accountIds.length) return
+
+  try {
+    const probeResult = await adminAPI.accounts.probeOpenAISpecial429(accountIds)
+    const failedCount = probeResult.results.filter((item) => !item.success).length
+    const summary = t('admin.accounts.bulkActions.probeOpenAISpecial429Summary', {
+      eligible: probeResult.eligible_count,
+      callable: probeResult.callable_count,
+      failed: failedCount,
+      skipped: probeResult.skipped.length
+    })
+
+    if (probeResult.callable_count === 0) {
+      appStore.showWarning(summary)
+      await reload()
+      return
+    }
+
+    pendingOpenAISpecial429Selection.value = accountIds
+    pendingOpenAISpecial429EnableIDs.value = [...probeResult.callable_ids]
+    pendingOpenAISpecial429EnableAccounts.value = [...probeResult.callable_accounts]
+    openAISpecial429EnableSummary.value = summary
+    openAISpecial429EnableConcurrency.value = ''
+    showOpenAISpecial429EnableDialog.value = true
+  } catch (error) {
+    console.error('Failed to probe OpenAI special 429 candidates:', error)
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  }
+}
+const handleBulkDisableOpenAISpecial429 = async () => {
+  const accountIds = [...selIds.value]
+  if (!accountIds.length) return
+  if (!confirm(t('admin.accounts.bulkActions.disableOpenAISpecial429Confirm', { count: accountIds.length }))) return
+
+  try {
+    const result = await adminAPI.accounts.disableOpenAISpecial429(accountIds)
+    if (result.target_count === 0) {
+      appStore.showWarning(t('admin.accounts.bulkActions.disableOpenAISpecial429NoTarget'))
+      await reload()
+      return
+    }
+    if (result.failed > 0) {
+      appStore.showError(t('admin.accounts.bulkActions.disableOpenAISpecial429Partial', {
+        success: result.success,
+        failed: result.failed
+      }))
+      setSelectedIds(result.failed_ids.length > 0 ? result.failed_ids : accountIds)
+    } else {
+      appStore.showSuccess(t('admin.accounts.bulkActions.disableOpenAISpecial429Success', { count: result.success }))
+      clearSelection()
+    }
+    await reload()
+  } catch (error) {
+    console.error('Failed to disable OpenAI special 429 mode:', error)
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
   }
 }
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {

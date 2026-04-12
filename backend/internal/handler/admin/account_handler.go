@@ -149,6 +149,62 @@ type BulkUpdateAccountsRequest struct {
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
+type accountIDBatchRequest struct {
+	AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`
+}
+
+type openAISpecial429AccountSummary struct {
+	AccountID int64  `json:"account_id"`
+	Name      string `json:"name"`
+}
+
+type openAISpecial429SkippedItem struct {
+	AccountID int64  `json:"account_id"`
+	Name      string `json:"name,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+type openAISpecial429ProbeAccountResult struct {
+	AccountID int64  `json:"account_id"`
+	Name      string `json:"name"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message,omitempty"`
+}
+
+type openAISpecial429ToggleAccountResult struct {
+	AccountID int64  `json:"account_id"`
+	Name      string `json:"name"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+type openAISpecial429ProbeResponse struct {
+	RequestedCount   int                                  `json:"requested_count"`
+	EligibleCount    int                                  `json:"eligible_count"`
+	ProbedCount      int                                  `json:"probed_count"`
+	CallableCount    int                                  `json:"callable_count"`
+	CallableIDs      []int64                              `json:"callable_ids"`
+	CallableAccounts []openAISpecial429AccountSummary     `json:"callable_accounts"`
+	Skipped          []openAISpecial429SkippedItem        `json:"skipped"`
+	Results          []openAISpecial429ProbeAccountResult `json:"results"`
+}
+
+type openAISpecial429ToggleResponse struct {
+	RequestedCount int                                   `json:"requested_count"`
+	TargetCount    int                                   `json:"target_count"`
+	Success        int                                   `json:"success"`
+	Failed         int                                   `json:"failed"`
+	SuccessIDs     []int64                               `json:"success_ids"`
+	FailedIDs      []int64                               `json:"failed_ids"`
+	Skipped        []openAISpecial429SkippedItem         `json:"skipped"`
+	Results        []openAISpecial429ToggleAccountResult `json:"results"`
+}
+
+type openAISpecial429EnableRequest struct {
+	AccountIDs  []int64 `json:"account_ids" binding:"required,min=1"`
+	Concurrency *int    `json:"concurrency"`
+}
+
 // CheckMixedChannelRequest represents check mixed channel risk request
 type CheckMixedChannelRequest struct {
 	Platform  string  `json:"platform" binding:"required"`
@@ -1149,6 +1205,368 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		"errors":   errors,
 		"warnings": warnings,
 	})
+}
+
+// BatchProbeOpenAISpecial429 handles probing selected OpenAI OAuth weekly-limited accounts.
+// POST /api/v1/admin/accounts/batch-probe-openai-special-429
+func (h *AccountHandler) BatchProbeOpenAISpecial429(c *gin.Context) {
+	if h.accountTestService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account test service unavailable")
+		return
+	}
+
+	var req accountIDBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	accountsByID, err := h.getAccountsByID(ctx, req.AccountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	now := time.Now()
+	resp := openAISpecial429ProbeResponse{
+		RequestedCount:   len(req.AccountIDs),
+		CallableIDs:      make([]int64, 0),
+		CallableAccounts: make([]openAISpecial429AccountSummary, 0),
+		Skipped:          make([]openAISpecial429SkippedItem, 0),
+		Results:          make([]openAISpecial429ProbeAccountResult, 0),
+	}
+
+	for _, accountID := range req.AccountIDs {
+		account := accountsByID[accountID]
+		if account == nil {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: accountID,
+				Reason:    "not_found",
+			})
+			continue
+		}
+
+		if reason := openAISpecial429ProbeSkipReason(account, now); reason != "" {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: account.ID,
+				Name:      account.Name,
+				Reason:    reason,
+			})
+			continue
+		}
+
+		resp.EligibleCount++
+		result, runErr := h.accountTestService.RunTestBackground(ctx, account.ID, "")
+		resp.ProbedCount++
+
+		entry := openAISpecial429ProbeAccountResult{
+			AccountID: account.ID,
+			Name:      account.Name,
+			Success:   runErr == nil && result != nil && result.Status == "success",
+		}
+		if runErr != nil {
+			entry.Message = truncateOpenAISpecial429Message(runErr.Error())
+		} else if result == nil {
+			entry.Message = "empty_result"
+		} else if result.Status == "success" {
+			entry.Message = fmt.Sprintf("success (%dms)", result.LatencyMs)
+			resp.CallableCount++
+			resp.CallableIDs = append(resp.CallableIDs, account.ID)
+			resp.CallableAccounts = append(resp.CallableAccounts, openAISpecial429AccountSummary{
+				AccountID: account.ID,
+				Name:      account.Name,
+			})
+		} else if result.ErrorMessage != "" {
+			entry.Message = truncateOpenAISpecial429Message(result.ErrorMessage)
+		} else {
+			entry.Message = truncateOpenAISpecial429Message(result.Status)
+		}
+		resp.Results = append(resp.Results, entry)
+	}
+
+	response.Success(c, resp)
+}
+
+// BatchEnableOpenAISpecial429 handles enabling special 429 mode and recovering runtime state.
+// POST /api/v1/admin/accounts/batch-enable-openai-special-429
+func (h *AccountHandler) BatchEnableOpenAISpecial429(c *gin.Context) {
+	if h.rateLimitService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Rate limit service unavailable")
+		return
+	}
+
+	var req openAISpecial429EnableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.Concurrency != nil && *req.Concurrency <= 0 {
+		response.BadRequest(c, "concurrency must be greater than 0")
+		return
+	}
+
+	ctx := c.Request.Context()
+	accountsByID, err := h.getAccountsByID(ctx, req.AccountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	resp := openAISpecial429ToggleResponse{
+		RequestedCount: len(req.AccountIDs),
+		SuccessIDs:     make([]int64, 0),
+		FailedIDs:      make([]int64, 0),
+		Skipped:        make([]openAISpecial429SkippedItem, 0),
+		Results:        make([]openAISpecial429ToggleAccountResult, 0),
+	}
+
+	targetIDs := make([]int64, 0, len(req.AccountIDs))
+	for _, accountID := range req.AccountIDs {
+		account := accountsByID[accountID]
+		if account == nil {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: accountID,
+				Reason:    "not_found",
+			})
+			continue
+		}
+		if !account.IsOpenAIOAuth() {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: account.ID,
+				Name:      account.Name,
+				Reason:    "not_openai_oauth",
+			})
+			continue
+		}
+		if account.IsOpenAISpecialRateLimitEnabled() {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: account.ID,
+				Name:      account.Name,
+				Reason:    "already_enabled",
+			})
+			continue
+		}
+		targetIDs = append(targetIDs, account.ID)
+	}
+
+	resp.TargetCount = len(targetIDs)
+	if len(targetIDs) == 0 {
+		response.Success(c, resp)
+		return
+	}
+
+	bulkResult, err := h.adminService.BulkUpdateAccounts(ctx, &service.BulkUpdateAccountsInput{
+		AccountIDs:  targetIDs,
+		Concurrency: req.Concurrency,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	successSet := make(map[int64]struct{}, len(bulkResult.SuccessIDs))
+	for _, id := range bulkResult.SuccessIDs {
+		successSet[id] = struct{}{}
+	}
+	failedByID := make(map[int64]string, len(bulkResult.Results))
+	for _, item := range bulkResult.Results {
+		if !item.Success {
+			failedByID[item.AccountID] = item.Error
+		}
+	}
+
+	for _, accountID := range targetIDs {
+		account := accountsByID[accountID]
+		entry := openAISpecial429ToggleAccountResult{
+			AccountID: accountID,
+			Name:      account.Name,
+		}
+
+		if errMsg, ok := failedByID[accountID]; ok {
+			entry.Error = truncateOpenAISpecial429Message(errMsg)
+			resp.Failed++
+			resp.FailedIDs = append(resp.FailedIDs, accountID)
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
+		if _, ok := successSet[accountID]; !ok {
+			entry.Error = "bulk_update_not_confirmed"
+			resp.Failed++
+			resp.FailedIDs = append(resp.FailedIDs, accountID)
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
+
+		if _, err := h.rateLimitService.RecoverAccountState(ctx, accountID, service.AccountRecoveryOptions{}); err != nil {
+			entry.Error = truncateOpenAISpecial429Message(err.Error())
+			resp.Failed++
+			resp.FailedIDs = append(resp.FailedIDs, accountID)
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
+
+		entry.Success = true
+		resp.Success++
+		resp.SuccessIDs = append(resp.SuccessIDs, accountID)
+		resp.Results = append(resp.Results, entry)
+	}
+
+	response.Success(c, resp)
+}
+
+// BatchDisableOpenAISpecial429 handles disabling special 429 mode for selected accounts.
+// POST /api/v1/admin/accounts/batch-disable-openai-special-429
+func (h *AccountHandler) BatchDisableOpenAISpecial429(c *gin.Context) {
+	var req accountIDBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	accountsByID, err := h.getAccountsByID(ctx, req.AccountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	resp := openAISpecial429ToggleResponse{
+		RequestedCount: len(req.AccountIDs),
+		SuccessIDs:     make([]int64, 0),
+		FailedIDs:      make([]int64, 0),
+		Skipped:        make([]openAISpecial429SkippedItem, 0),
+		Results:        make([]openAISpecial429ToggleAccountResult, 0),
+	}
+
+	targetIDs := make([]int64, 0, len(req.AccountIDs))
+	for _, accountID := range req.AccountIDs {
+		account := accountsByID[accountID]
+		if account == nil {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: accountID,
+				Reason:    "not_found",
+			})
+			continue
+		}
+		if !account.IsOpenAIOAuth() {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: account.ID,
+				Name:      account.Name,
+				Reason:    "not_openai_oauth",
+			})
+			continue
+		}
+		if !account.IsOpenAISpecialRateLimitEnabled() {
+			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+				AccountID: account.ID,
+				Name:      account.Name,
+				Reason:    "already_disabled",
+			})
+			continue
+		}
+		targetIDs = append(targetIDs, account.ID)
+	}
+
+	resp.TargetCount = len(targetIDs)
+	if len(targetIDs) == 0 {
+		response.Success(c, resp)
+		return
+	}
+
+	bulkResult, err := h.adminService.BulkUpdateAccounts(ctx, &service.BulkUpdateAccountsInput{
+		AccountIDs: targetIDs,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": false,
+		},
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	failedByID := make(map[int64]string, len(bulkResult.Results))
+	for _, item := range bulkResult.Results {
+		if !item.Success {
+			failedByID[item.AccountID] = item.Error
+		}
+	}
+	successSet := make(map[int64]struct{}, len(bulkResult.SuccessIDs))
+	for _, id := range bulkResult.SuccessIDs {
+		successSet[id] = struct{}{}
+	}
+
+	for _, accountID := range targetIDs {
+		account := accountsByID[accountID]
+		entry := openAISpecial429ToggleAccountResult{
+			AccountID: accountID,
+			Name:      account.Name,
+		}
+		if errMsg, ok := failedByID[accountID]; ok {
+			entry.Error = truncateOpenAISpecial429Message(errMsg)
+			resp.Failed++
+			resp.FailedIDs = append(resp.FailedIDs, accountID)
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
+		if _, ok := successSet[accountID]; !ok {
+			entry.Error = "bulk_update_not_confirmed"
+			resp.Failed++
+			resp.FailedIDs = append(resp.FailedIDs, accountID)
+			resp.Results = append(resp.Results, entry)
+			continue
+		}
+		entry.Success = true
+		resp.Success++
+		resp.SuccessIDs = append(resp.SuccessIDs, accountID)
+		resp.Results = append(resp.Results, entry)
+	}
+
+	response.Success(c, resp)
+}
+
+func (h *AccountHandler) getAccountsByID(ctx context.Context, accountIDs []int64) (map[int64]*service.Account, error) {
+	accounts, err := h.adminService.GetAccountsByIDs(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int64]*service.Account, len(accounts))
+	for _, account := range accounts {
+		if account != nil {
+			result[account.ID] = account
+		}
+	}
+	return result, nil
+}
+
+func openAISpecial429ProbeSkipReason(account *service.Account, now time.Time) string {
+	if account == nil {
+		return "not_found"
+	}
+	if !account.IsOpenAIOAuth() {
+		return "not_openai_oauth"
+	}
+	if account.IsOpenAISpecialRateLimitEnabled() {
+		return "special_mode_enabled"
+	}
+	if account.HasActiveOpenAICodexFiveHourLimit(now) {
+		return "five_hour_limited"
+	}
+	if !account.HasActiveOpenAICodexWeeklyLimit(now) {
+		return "not_week_limited"
+	}
+	return ""
+}
+
+func truncateOpenAISpecial429Message(message string) string {
+	message = strings.TrimSpace(message)
+	if len(message) <= 240 {
+		return message
+	}
+	return message[:240] + "..."
 }
 
 // BatchCreate handles batch creating accounts
