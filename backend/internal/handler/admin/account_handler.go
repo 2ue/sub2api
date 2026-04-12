@@ -1263,14 +1263,14 @@ func (h *AccountHandler) BatchProbeOpenAISpecial429(c *gin.Context) {
 		}
 
 		resp.EligibleCount++
-		idx := idx
-		account := account
+		idxCopy := idx
+		accountCopy := account
 		g.Go(func() error {
-			result, runErr := h.accountTestService.RunTestBackground(ctx, account.ID, "")
+			result, runErr := h.accountTestService.RunTestBackground(ctx, accountCopy.ID, "")
 
 			entry := openAISpecial429ProbeAccountResult{
-				AccountID: account.ID,
-				Name:      account.Name,
+				AccountID: accountCopy.ID,
+				Name:      accountCopy.Name,
 				Success:   runErr == nil && result != nil && result.Status == "success",
 			}
 			if runErr != nil {
@@ -1285,7 +1285,7 @@ func (h *AccountHandler) BatchProbeOpenAISpecial429(c *gin.Context) {
 				entry.Message = truncateOpenAISpecial429Message(result.Status)
 			}
 
-			probeResults[idx] = &entry
+			probeResults[idxCopy] = &entry
 			return nil
 		})
 	}
