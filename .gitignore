@@ -134,7 +134,7 @@ docs/*
 !docs/api_full_reference_v2/
 !docs/api_full_reference_v2/**
 .serena/
-.codex/
+.codex/**/__pycache__/
 frontend/coverage/
 aicodex
 output/
