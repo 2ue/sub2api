@@ -61,9 +61,12 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 
 type openAIAccountTestRepo struct {
 	mockAccountRepoForGemini
-	updatedExtra  map[string]any
-	rateLimitedID int64
-	rateLimitedAt *time.Time
+	updatedExtra      map[string]any
+	rateLimitedID     int64
+	rateLimitedAt     *time.Time
+	tempUnschedID     int64
+	tempUnschedUntil  *time.Time
+	tempUnschedReason string
 }
 
 func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
@@ -74,6 +77,13 @@ func (r *openAIAccountTestRepo) UpdateExtra(_ context.Context, _ int64, updates 
 func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
 	r.rateLimitedAt = &resetAt
+	return nil
+}
+
+func (r *openAIAccountTestRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedID = id
+	r.tempUnschedUntil = &until
+	r.tempUnschedReason = reason
 	return nil
 }
 
@@ -125,7 +135,8 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 
 	repo := &openAIAccountTestRepo{}
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	rateLimitService := NewRateLimitService(repo, nil, nil, nil, nil)
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
 	account := &Account{
 		ID:          88,
 		Platform:    PlatformOpenAI,
@@ -146,6 +157,49 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 	}
 }
 
+func TestAccountTestService_OpenAI429SpecialModeUsesTempUnsched(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := newTestContext()
+
+	resp := newJSONResponse(http.StatusTooManyRequests, `{"error":{"type":"usage_limit_reached","message":"limit reached"}}`)
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "604800")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-secondary-used-percent", "100")
+	resp.Header.Set("x-codex-secondary-reset-after-seconds", "18000")
+	resp.Header.Set("x-codex-secondary-window-minutes", "300")
+
+	repo := &openAIAccountTestRepo{}
+	counter := &openAI429CounterCacheStub{}
+	rateLimitService := NewRateLimitService(repo, nil, nil, nil, nil)
+	rateLimitService.SetOpenAI429CounterCache(counter)
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
+	account := &Account{
+		ID:          91,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled":       true,
+			"openai_oauth_special_429_temp_unsched_seconds": 30,
+		},
+	}
+
+	before := time.Now()
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.Error(t, err)
+	require.NotEmpty(t, repo.updatedExtra)
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Equal(t, int64(91), repo.tempUnschedID)
+	require.NotNil(t, repo.tempUnschedUntil)
+	require.WithinDuration(t, before.Add(30*time.Second), *repo.tempUnschedUntil, 2*time.Second)
+	require.Nil(t, account.RateLimitResetAt)
+	require.Equal(t, int64(1), counter.incrementCount)
+}
+
 func TestAccountTestService_OpenAISuccessSpecialModeDoesNotRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()
@@ -162,8 +216,11 @@ func TestAccountTestService_OpenAISuccessSpecialModeDoesNotRateLimit(t *testing.
 	resp.Header.Set("x-codex-secondary-window-minutes", "300")
 
 	repo := &openAIAccountTestRepo{}
+	counter := &openAI429CounterCacheStub{}
+	rateLimitService := NewRateLimitService(repo, nil, nil, nil, nil)
+	rateLimitService.SetOpenAI429CounterCache(counter)
 	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
-	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	svc := &AccountTestService{accountRepo: repo, rateLimitService: rateLimitService, httpUpstream: upstream}
 	account := &Account{
 		ID:          90,
 		Platform:    PlatformOpenAI,
@@ -182,5 +239,6 @@ func TestAccountTestService_OpenAISuccessSpecialModeDoesNotRateLimit(t *testing.
 	require.Zero(t, repo.rateLimitedID)
 	require.Nil(t, repo.rateLimitedAt)
 	require.Nil(t, account.RateLimitResetAt)
+	require.Equal(t, []int64{90}, counter.resetCalls)
 	require.Contains(t, recorder.Body.String(), "test_complete")
 }
