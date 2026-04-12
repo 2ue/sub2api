@@ -650,7 +650,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp)
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(resp, account)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -681,7 +681,7 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 	}()
 }
 
-func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time.Time, error) {
+func extractOpenAICodexProbeSnapshot(resp *http.Response, account *Account) (map[string]any, *time.Time, error) {
 	if resp == nil {
 		return nil, nil, nil
 	}
@@ -689,6 +689,9 @@ func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time
 		baseTime := time.Now()
 		updates := buildCodexUsageExtraUpdates(snapshot, baseTime)
 		resetAt := codexRateLimitResetAtFromSnapshot(snapshot, baseTime)
+		if !shouldApplyOpenAICodexSnapshotRateLimit(account) {
+			resetAt = nil
+		}
 		if len(updates) > 0 {
 			return updates, resetAt, nil
 		}
@@ -701,7 +704,7 @@ func extractOpenAICodexProbeSnapshot(resp *http.Response) (map[string]any, *time
 }
 
 func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error) {
-	updates, _, err := extractOpenAICodexProbeSnapshot(resp)
+	updates, _, err := extractOpenAICodexProbeSnapshot(resp, nil)
 	return updates, err
 }
 

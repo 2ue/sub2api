@@ -1,0 +1,16 @@
+当前版本未保留旧版的“逐 handler 字段级展开”提取结果。
+
+本次同步优先保证：
+- 路由覆盖完整
+- 方法 / 路径准确
+- 鉴权与 admin-key 结论准确
+- 注册位置准确
+
+下列路由使用 inline wrapper，而不是直接注册某个 handler 方法：
+- GET /health
+- POST /api/event_logging/batch
+- GET /setup/status（正常服务模式）
+- POST /v1/messages
+- POST /v1/messages/count_tokens
+
+这些路由已在对应 Markdown 表格的“Handler”与“备注”列中说明，不再单独视为 unresolved。

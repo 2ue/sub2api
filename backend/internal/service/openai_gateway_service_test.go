@@ -32,6 +32,7 @@ type stubOpenAIAccountRepo struct {
 type snapshotUpdateAccountRepo struct {
 	stubOpenAIAccountRepo
 	updateExtraCalls chan map[string]any
+	rateLimitCalls   chan time.Time
 }
 
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
@@ -41,6 +42,13 @@ func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, u
 			copied[k] = v
 		}
 		r.updateExtraCalls <- copied
+	}
+	return nil
+}
+
+func (r *snapshotUpdateAccountRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
+	if r.rateLimitCalls != nil {
+		r.rateLimitCalls <- resetAt
 	}
 	return nil
 }
@@ -1423,6 +1431,7 @@ func TestOpenAIValidateUpstreamBaseURLEnabledEnforcesAllowlist(t *testing.T) {
 func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 	repo := &snapshotUpdateAccountRepo{updateExtraCalls: make(chan map[string]any, 1)}
 	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 123, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	headers := http.Header{}
 	headers.Set("x-codex-primary-used-percent", "12")
 	headers.Set("x-codex-secondary-used-percent", "34")
@@ -1431,7 +1440,7 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 	headers.Set("x-codex-primary-reset-after-seconds", "600")
 	headers.Set("x-codex-secondary-reset-after-seconds", "86400")
 
-	svc.UpdateCodexUsageSnapshotFromHeaders(context.Background(), 123, headers)
+	svc.UpdateCodexUsageSnapshotFromHeaders(context.Background(), account, headers)
 
 	select {
 	case updates := <-repo.updateExtraCalls:
@@ -1441,6 +1450,44 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 		require.Equal(t, 86400, updates["codex_7d_reset_after_seconds"])
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected UpdateExtra to be called")
+	}
+}
+
+func TestOpenAIUpdateCodexUsageSnapshotFromHeaders_SpecialModeSkipsSuccessRateLimit(t *testing.T) {
+	repo := &snapshotUpdateAccountRepo{
+		updateExtraCalls: make(chan map[string]any, 1),
+		rateLimitCalls:   make(chan time.Time, 1),
+	}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID:       124,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-secondary-used-percent", "12")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+	headers.Set("x-codex-primary-reset-after-seconds", "86400")
+	headers.Set("x-codex-secondary-reset-after-seconds", "600")
+
+	svc.UpdateCodexUsageSnapshotFromHeaders(context.Background(), account, headers)
+
+	select {
+	case updates := <-repo.updateExtraCalls:
+		require.Equal(t, 100.0, updates["codex_7d_used_percent"])
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected UpdateExtra to be called")
+	}
+
+	select {
+	case resetAt := <-repo.rateLimitCalls:
+		t.Fatalf("unexpected rate limit reset at: %v", resetAt)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

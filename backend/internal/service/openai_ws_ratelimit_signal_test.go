@@ -359,8 +359,9 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ExhaustedSnapshotSetsRate
 		SecondaryResetAfterSeconds: ptrIntWS(1200),
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
+	account := &Account{ID: 601, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	before := time.Now()
-	svc.updateCodexUsageSnapshot(context.Background(), 601, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
 
 	select {
 	case updates := <-repo.updateExtraCh:
@@ -391,10 +392,50 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_NonExhaustedSnapshotDoesN
 		SecondaryResetAfterSeconds: ptrIntWS(1200),
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
-	svc.updateCodexUsageSnapshot(context.Background(), 602, snapshot)
+	account := &Account{ID: 602, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
 
 	select {
 	case <-repo.updateExtraCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 codex 快照落库超时")
+	}
+
+	select {
+	case resetAt := <-repo.rateLimitCh:
+		t.Fatalf("unexpected rate limit reset at: %v", resetAt)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_SpecialModeSkipsSuccessRateLimit(t *testing.T) {
+	repo := &openAICodexSnapshotAsyncRepo{
+		updateExtraCh: make(chan map[string]any, 1),
+		rateLimitCh:   make(chan time.Time, 1),
+	}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID:       603,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+	snapshot := &OpenAICodexUsageSnapshot{
+		PrimaryUsedPercent:         ptrFloat64WS(100),
+		PrimaryResetAfterSeconds:   ptrIntWS(3600),
+		PrimaryWindowMinutes:       ptrIntWS(10080),
+		SecondaryUsedPercent:       ptrFloat64WS(12),
+		SecondaryResetAfterSeconds: ptrIntWS(1200),
+		SecondaryWindowMinutes:     ptrIntWS(300),
+	}
+
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
+
+	select {
+	case updates := <-repo.updateExtraCh:
+		require.Equal(t, 100.0, updates["codex_7d_used_percent"])
 	case <-time.After(2 * time.Second):
 		t.Fatal("等待 codex 快照落库超时")
 	}
@@ -424,8 +465,9 @@ func TestOpenAIGatewayService_UpdateCodexUsageSnapshot_ThrottlesExtraWrites(t *t
 		SecondaryWindowMinutes:     ptrIntWS(300),
 	}
 
-	svc.updateCodexUsageSnapshot(context.Background(), 777, snapshot)
-	svc.updateCodexUsageSnapshot(context.Background(), 777, snapshot)
+	account := &Account{ID: 777, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
+	svc.updateCodexUsageSnapshot(context.Background(), account, snapshot)
 
 	select {
 	case <-repo.updateExtraCh:
@@ -470,6 +512,35 @@ func TestOpenAIGatewayService_GetSchedulableAccount_ExhaustedCodexExtraSetsRateL
 		require.WithinDuration(t, resetAt.UTC(), persisted, time.Second)
 	case <-time.After(2 * time.Second):
 		t.Fatal("等待旧快照补写限流状态超时")
+	}
+}
+
+func TestOpenAIGatewayService_GetSchedulableAccount_SpecialModeSkipsCodexExtraRateLimit(t *testing.T) {
+	resetAt := time.Now().Add(6 * 24 * time.Hour)
+	account := Account{
+		ID:          703,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+			"codex_7d_used_percent":                   100.0,
+			"codex_7d_reset_at":                       resetAt.UTC().Format(time.RFC3339),
+		},
+	}
+	repo := &openAICodexExtraListRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}, rateLimitCh: make(chan time.Time, 1)}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+
+	fresh, err := svc.getSchedulableAccount(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fresh)
+	require.Nil(t, fresh.RateLimitResetAt)
+	select {
+	case persisted := <-repo.rateLimitCh:
+		t.Fatalf("unexpected persisted rate limit: %v", persisted)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

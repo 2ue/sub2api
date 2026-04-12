@@ -67,6 +67,11 @@ type tempUnschedCacheRecorder struct {
 	deleteErr  error
 }
 
+type openAI429CounterCacheRecorder struct {
+	resetIDs []int64
+	resetErr error
+}
+
 type recoverTokenInvalidatorStub struct {
 	accounts []*Account
 	err      error
@@ -85,6 +90,15 @@ func (c *tempUnschedCacheRecorder) DeleteTempUnsched(ctx context.Context, accoun
 	return c.deleteErr
 }
 
+func (c *openAI429CounterCacheRecorder) IncrementOpenAI429Count(ctx context.Context, accountID int64, windowSeconds int) (int64, error) {
+	return 0, nil
+}
+
+func (c *openAI429CounterCacheRecorder) ResetOpenAI429Count(ctx context.Context, accountID int64) error {
+	c.resetIDs = append(c.resetIDs, accountID)
+	return c.resetErr
+}
+
 func (s *recoverTokenInvalidatorStub) InvalidateToken(ctx context.Context, account *Account) error {
 	s.accounts = append(s.accounts, account)
 	return s.err
@@ -94,6 +108,8 @@ func TestRateLimitService_ClearRateLimit_AlsoClearsTempUnschedulable(t *testing.
 	repo := &rateLimitClearRepoStub{}
 	cache := &tempUnschedCacheRecorder{}
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, cache)
+	counter := &openAI429CounterCacheRecorder{}
+	svc.SetOpenAI429CounterCache(counter)
 
 	err := svc.ClearRateLimit(context.Background(), 42)
 	require.NoError(t, err)
@@ -103,6 +119,7 @@ func TestRateLimitService_ClearRateLimit_AlsoClearsTempUnschedulable(t *testing.
 	require.Equal(t, 1, repo.clearModelRateLimitCalls)
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
 	require.Equal(t, []int64{42}, cache.deletedIDs)
+	require.Equal(t, []int64{42}, counter.resetIDs)
 }
 
 func TestRateLimitService_ClearRateLimit_ClearTempUnschedulableFailed(t *testing.T) {

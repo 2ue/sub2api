@@ -34,3 +34,12 @@ type TimeoutCounterCache interface {
 	// GetTimeoutCountTTL 获取计数器剩余过期时间
 	GetTimeoutCountTTL(ctx context.Context, accountID int64) (time.Duration, error)
 }
+
+// OpenAI429CounterCache 追踪特殊 OpenAI OAuth 账号在窗口内的 429 次数。
+type OpenAI429CounterCache interface {
+	// IncrementOpenAI429Count 原子递增计数并返回当前值。
+	// windowSeconds 是计数窗口时间（秒），超过此时间计数器会自动重置。
+	IncrementOpenAI429Count(ctx context.Context, accountID int64, windowSeconds int) (int64, error)
+	// ResetOpenAI429Count 清零计数器（成功响应或手动恢复状态时调用）。
+	ResetOpenAI429Count(ctx context.Context, accountID int64) error
+}

@@ -12,12 +12,12 @@ import (
 
 type accountRepoStubForClearAccountError struct {
 	mockAccountRepoForGemini
-	account                 *Account
-	clearErrorCalls         int
-	clearRateLimitCalls     int
-	clearAntigravityCalls   int
+	account                  *Account
+	clearErrorCalls          int
+	clearRateLimitCalls      int
+	clearAntigravityCalls    int
 	clearModelRateLimitCalls int
-	clearTempUnschedCalls   int
+	clearTempUnschedCalls    int
 }
 
 func (r *accountRepoStubForClearAccountError) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -58,19 +58,20 @@ func (r *accountRepoStubForClearAccountError) ClearTempUnschedulable(ctx context
 func TestAdminService_ClearAccountError_AlsoClearsRecoverableRuntimeState(t *testing.T) {
 	until := time.Now().Add(10 * time.Minute)
 	resetAt := time.Now().Add(5 * time.Minute)
+	counter := &openAI429CounterCacheRecorder{}
 	repo := &accountRepoStubForClearAccountError{
 		account: &Account{
-			ID:                     31,
-			Platform:               PlatformOpenAI,
-			Type:                   AccountTypeOAuth,
-			Status:                 StatusError,
-			ErrorMessage:           "refresh failed",
-			RateLimitResetAt:       &resetAt,
-			TempUnschedulableUntil: &until,
+			ID:                      31,
+			Platform:                PlatformOpenAI,
+			Type:                    AccountTypeOAuth,
+			Status:                  StatusError,
+			ErrorMessage:            "refresh failed",
+			RateLimitResetAt:        &resetAt,
+			TempUnschedulableUntil:  &until,
 			TempUnschedulableReason: "missing refresh token",
 		},
 	}
-	svc := &adminServiceImpl{accountRepo: repo}
+	svc := &adminServiceImpl{accountRepo: repo, openAI429CounterCache: counter}
 
 	updated, err := svc.ClearAccountError(context.Background(), 31)
 	require.NoError(t, err)
@@ -80,6 +81,7 @@ func TestAdminService_ClearAccountError_AlsoClearsRecoverableRuntimeState(t *tes
 	require.Equal(t, 1, repo.clearAntigravityCalls)
 	require.Equal(t, 1, repo.clearModelRateLimitCalls)
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
+	require.Equal(t, []int64{31}, counter.resetIDs)
 	require.Nil(t, updated.RateLimitResetAt)
 	require.Nil(t, updated.TempUnschedulableUntil)
 	require.Empty(t, updated.TempUnschedulableReason)

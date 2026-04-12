@@ -145,3 +145,42 @@ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimit(t *testing.T) 
 		require.WithinDuration(t, *repo.rateLimitedAt, *account.RateLimitResetAt, time.Second)
 	}
 }
+
+func TestAccountTestService_OpenAISuccessSpecialModeDoesNotRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	resp := newJSONResponse(http.StatusOK, "")
+	resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.completed"}
+
+`))
+	resp.Header.Set("x-codex-primary-used-percent", "100")
+	resp.Header.Set("x-codex-primary-reset-after-seconds", "604800")
+	resp.Header.Set("x-codex-primary-window-minutes", "10080")
+	resp.Header.Set("x-codex-secondary-used-percent", "42")
+	resp.Header.Set("x-codex-secondary-reset-after-seconds", "18000")
+	resp.Header.Set("x-codex-secondary-window-minutes", "300")
+
+	repo := &openAIAccountTestRepo{}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
+	account := &Account{
+		ID:          90,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token"},
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4")
+	require.NoError(t, err)
+	require.NotEmpty(t, repo.updatedExtra)
+	require.Equal(t, 100.0, repo.updatedExtra["codex_7d_used_percent"])
+	require.Zero(t, repo.rateLimitedID)
+	require.Nil(t, repo.rateLimitedAt)
+	require.Nil(t, account.RateLimitResetAt)
+	require.Contains(t, recorder.Body.String(), "test_complete")
+}

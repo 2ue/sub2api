@@ -1,0 +1,30 @@
+{
+  "synced_at": "2026-03-18",
+  "version": "api_full_reference_v2",
+  "policy": "summary_manifest_only",
+  "totals": {
+    "all_routes": 356,
+    "common_setup": 7,
+    "auth_user": 56,
+    "gateway": 28,
+    "admin_core": 68,
+    "admin_accounts": 71,
+    "admin_ops": 50,
+    "admin_misc": 76,
+    "admin_key_supported": 265
+  },
+  "source_files": [
+    "backend/internal/server/routes/common.go",
+    "backend/internal/server/routes/auth.go",
+    "backend/internal/server/routes/user.go",
+    "backend/internal/server/routes/sora_client.go",
+    "backend/internal/server/routes/gateway.go",
+    "backend/internal/server/routes/admin.go",
+    "backend/internal/setup/handler.go"
+  ],
+  "notes": [
+    "This file is a lightweight machine-readable manifest for the synced documentation set.",
+    "Detailed route tables live in 01-common-setup.md through 07-admin-misc.md.",
+    "All /api/v1/admin/** routes are summarized in 08-admin-key-supported.md."
+  ]
+}
