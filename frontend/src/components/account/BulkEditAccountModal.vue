@@ -698,6 +698,94 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth special 429 handling -->
+      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-special-rate-limit-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-special-rate-limit-enabled"
+            >
+              {{ t('admin.accounts.openai.specialRateLimitMode') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.specialRateLimitModeDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAISpecialRateLimit"
+            id="bulk-edit-openai-special-rate-limit-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-special-rate-limit-body"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-special-rate-limit-body"
+          :class="!enableOpenAISpecialRateLimit && 'pointer-events-none opacity-50'"
+          role="group"
+          aria-labelledby="bulk-edit-openai-special-rate-limit-label"
+        >
+          <div class="mb-4 flex items-center justify-between">
+            <span class="text-sm text-gray-700 dark:text-gray-300">
+              {{ t('admin.accounts.openai.specialRateLimitMode') }}
+            </span>
+            <button
+              type="button"
+              @click="openAISpecialRateLimitEnabled = !openAISpecialRateLimitEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                openAISpecialRateLimitEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  openAISpecialRateLimitEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+
+          <div
+            v-if="openAISpecialRateLimitEnabled"
+            class="grid grid-cols-1 gap-4 md:grid-cols-3"
+          >
+            <div>
+              <label class="input-label">{{ t('admin.accounts.openai.special429TempUnschedSeconds') }}</label>
+              <input
+                v-model.number="openAISpecial429TempUnschedSeconds"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.openai.special429EscalationWindowSeconds') }}</label>
+              <input
+                v-model.number="openAISpecial429EscalationWindowSeconds"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.accounts.openai.special429EscalationThreshold') }}</label>
+              <input
+                v-model.number="openAISpecial429EscalationThreshold"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- RPM Limit (仅全部为 Anthropic OAuth/SetupToken 时显示) -->
       <div v-if="allAnthropicOAuthOrSetupToken" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1011,6 +1099,7 @@ const enableStatus = ref(false)
 const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
 const enableOpenAIWSMode = ref(false)
+const enableOpenAISpecialRateLimit = ref(false)
 const enableRpmLimit = ref(false)
 
 // State - field values
@@ -1034,6 +1123,13 @@ const status = ref<'active' | 'inactive'>('active')
 const groupIds = ref<number[]>([])
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS = 30
+const DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS = 360
+const DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD = 10
+const openAISpecialRateLimitEnabled = ref(false)
+const openAISpecial429TempUnschedSeconds = ref(DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS)
+const openAISpecial429EscalationWindowSeconds = ref(DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS)
+const openAISpecial429EscalationThreshold = ref(DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD)
 const rpmLimitEnabled = ref(false)
 const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
@@ -1252,6 +1348,32 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     )
   }
 
+  if (enableOpenAISpecialRateLimit.value) {
+    const extra = ensureExtra()
+    extra.openai_oauth_special_rate_limit_enabled = openAISpecialRateLimitEnabled.value
+    extra.openai_oauth_special_429_temp_unsched_seconds = Math.max(
+      1,
+      openAISpecialRateLimitEnabled.value
+        ? (openAISpecial429TempUnschedSeconds.value || DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS)
+        : DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS
+    )
+    extra.openai_oauth_special_429_escalation_window_seconds = Math.max(
+      1,
+      openAISpecialRateLimitEnabled.value
+        ? (
+            openAISpecial429EscalationWindowSeconds.value ||
+            DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+          )
+        : DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+    )
+    extra.openai_oauth_special_429_escalation_threshold = Math.max(
+      1,
+      openAISpecialRateLimitEnabled.value
+        ? (openAISpecial429EscalationThreshold.value || DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD)
+        : DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD
+    )
+  }
+
   // RPM limit settings (写入 extra 字段)
   if (enableRpmLimit.value) {
     const extra = ensureExtra()
@@ -1342,6 +1464,7 @@ const handleSubmit = async () => {
     enableStatus.value ||
     enableGroups.value ||
     enableOpenAIWSMode.value ||
+    enableOpenAISpecialRateLimit.value ||
     enableRpmLimit.value ||
     userMsgQueueMode.value !== null
 
@@ -1435,11 +1558,16 @@ watch(
       enableGroups.value = false
       enableOpenAIPassthrough.value = false
       enableOpenAIWSMode.value = false
+      enableOpenAISpecialRateLimit.value = false
       enableRpmLimit.value = false
 
       // Reset all values
       baseUrl.value = ''
       openaiPassthroughEnabled.value = false
+      openAISpecialRateLimitEnabled.value = false
+      openAISpecial429TempUnschedSeconds.value = DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS
+      openAISpecial429EscalationWindowSeconds.value = DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+      openAISpecial429EscalationThreshold.value = DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD
       modelRestrictionMode.value = 'whitelist'
       allowedModels.value = []
       modelMappings.value = []
