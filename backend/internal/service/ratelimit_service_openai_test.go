@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCalculateOpenAI429ResetTime_7dExhausted(t *testing.T) {
@@ -148,6 +150,9 @@ type openAI429SnapshotRepo struct {
 	mockAccountRepoForGemini
 	rateLimitedID int64
 	updatedExtra  map[string]any
+	tempUnschedID int64
+	tempUnschedAt *time.Time
+	tempReason    string
 }
 
 func (r *openAI429SnapshotRepo) SetRateLimited(_ context.Context, id int64, _ time.Time) error {
@@ -157,6 +162,28 @@ func (r *openAI429SnapshotRepo) SetRateLimited(_ context.Context, id int64, _ ti
 
 func (r *openAI429SnapshotRepo) UpdateExtra(_ context.Context, _ int64, updates map[string]any) error {
 	r.updatedExtra = updates
+	return nil
+}
+
+func (r *openAI429SnapshotRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedID = id
+	r.tempUnschedAt = &until
+	r.tempReason = reason
+	return nil
+}
+
+type openAI429CounterCacheStub struct {
+	incrementCount int64
+	resetCalls     []int64
+}
+
+func (c *openAI429CounterCacheStub) IncrementOpenAI429Count(_ context.Context, _ int64, _ int) (int64, error) {
+	c.incrementCount++
+	return c.incrementCount, nil
+}
+
+func (c *openAI429CounterCacheStub) ResetOpenAI429Count(_ context.Context, accountID int64) error {
+	c.resetCalls = append(c.resetCalls, accountID)
 	return nil
 }
 
@@ -187,6 +214,91 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	if got := repo.updatedExtra["codex_7d_used_percent"]; got != 100.0 {
 		t.Fatalf("codex_7d_used_percent = %v, want 100", got)
 	}
+}
+
+func TestHandle429_OpenAISpecialModeUsesTempUnschedBeforeEscalation(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	counter := &openAI429CounterCacheStub{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	svc.SetOpenAI429CounterCache(counter)
+	account := &Account{
+		ID:       124,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled":            true,
+			"openai_oauth_special_429_temp_unsched_seconds":      30,
+			"openai_oauth_special_429_escalation_window_seconds": 360,
+			"openai_oauth_special_429_escalation_threshold":      10,
+		},
+	}
+
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+
+	before := time.Now()
+	svc.handle429(context.Background(), account, headers, []byte(`{"error":{"type":"usage_limit_reached","message":"limit reached"}}`))
+
+	if repo.rateLimitedID != 0 {
+		t.Fatalf("unexpected long rate limit for special mode account: %d", repo.rateLimitedID)
+	}
+	if repo.tempUnschedID != account.ID {
+		t.Fatalf("tempUnschedID = %d, want %d", repo.tempUnschedID, account.ID)
+	}
+	if repo.tempUnschedAt == nil {
+		t.Fatal("expected temp unsched timestamp")
+	}
+	require.WithinDuration(t, before.Add(30*time.Second), *repo.tempUnschedAt, 2*time.Second)
+	require.NotEmpty(t, repo.updatedExtra)
+}
+
+func TestHandle429_OpenAISpecialModeEscalatesAfterThreshold(t *testing.T) {
+	repo := &openAI429SnapshotRepo{}
+	counter := &openAI429CounterCacheStub{incrementCount: 9}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	svc.SetOpenAI429CounterCache(counter)
+	account := &Account{
+		ID:       125,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled":       true,
+			"openai_oauth_special_429_escalation_threshold": 10,
+		},
+	}
+
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+
+	svc.handle429(context.Background(), account, headers, []byte(`{"error":{"type":"usage_limit_reached","message":"limit reached"}}`))
+
+	if repo.rateLimitedID != account.ID {
+		t.Fatalf("rateLimitedID = %d, want %d", repo.rateLimitedID, account.ID)
+	}
+	if repo.tempUnschedID != 0 {
+		t.Fatalf("unexpected temp unsched fallback: %d", repo.tempUnschedID)
+	}
+}
+
+func TestHandleOpenAISpecialSuccess_ResetsCounter(t *testing.T) {
+	counter := &openAI429CounterCacheStub{}
+	svc := NewRateLimitService(&openAI429SnapshotRepo{}, nil, nil, nil, nil)
+	svc.SetOpenAI429CounterCache(counter)
+	account := &Account{
+		ID:       126,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+
+	svc.handleOpenAISpecialSuccess(context.Background(), account)
+	require.Equal(t, []int64{126}, counter.resetCalls)
 }
 
 func TestNormalizedCodexLimits(t *testing.T) {

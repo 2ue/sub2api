@@ -1180,6 +1180,61 @@ func (a *Account) IsCodexCLIOnlyEnabled() bool {
 	return ok && enabled
 }
 
+const (
+	defaultOpenAISpecial429TempUnschedSeconds      = 30
+	defaultOpenAISpecial429EscalationWindowSeconds = 6 * 60
+	defaultOpenAISpecial429EscalationThreshold     = 10
+)
+
+// IsOpenAISpecialRateLimitEnabled 返回 OpenAI OAuth 账号是否启用特殊限流模式。
+// 字段：accounts.extra.openai_oauth_special_rate_limit_enabled。
+// 开启后：
+// 1. 成功响应中的 codex exhausted 头仅做观测，不再直接写入本地周限/5h 限流；
+// 2. 显式 429 先进入短暂 temp-unsched，再按窗口次数决定是否升级成长限流。
+func (a *Account) IsOpenAISpecialRateLimitEnabled() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["openai_oauth_special_rate_limit_enabled"].(bool)
+	return ok && enabled
+}
+
+// GetOpenAISpecial429TempUnschedSeconds 返回特殊模式下 429 的短暂摘出秒数。
+func (a *Account) GetOpenAISpecial429TempUnschedSeconds() int {
+	if a == nil || !a.IsOpenAIOAuth() {
+		return defaultOpenAISpecial429TempUnschedSeconds
+	}
+	value := a.getExtraInt("openai_oauth_special_429_temp_unsched_seconds")
+	if value <= 0 {
+		return defaultOpenAISpecial429TempUnschedSeconds
+	}
+	return value
+}
+
+// GetOpenAISpecial429EscalationWindowSeconds 返回特殊模式下 429 升级统计窗口秒数。
+func (a *Account) GetOpenAISpecial429EscalationWindowSeconds() int {
+	if a == nil || !a.IsOpenAIOAuth() {
+		return defaultOpenAISpecial429EscalationWindowSeconds
+	}
+	value := a.getExtraInt("openai_oauth_special_429_escalation_window_seconds")
+	if value <= 0 {
+		return defaultOpenAISpecial429EscalationWindowSeconds
+	}
+	return value
+}
+
+// GetOpenAISpecial429EscalationThreshold 返回特殊模式下 429 升级阈值。
+func (a *Account) GetOpenAISpecial429EscalationThreshold() int {
+	if a == nil || !a.IsOpenAIOAuth() {
+		return defaultOpenAISpecial429EscalationThreshold
+	}
+	value := a.getExtraInt("openai_oauth_special_429_escalation_threshold")
+	if value <= 0 {
+		return defaultOpenAISpecial429EscalationThreshold
+	}
+	return value
+}
+
 // WindowCostSchedulability 窗口费用调度状态
 type WindowCostSchedulability int
 

@@ -204,9 +204,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
 	if handleErr == nil && account.Type == AccountTypeOAuth {
-		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
-		}
+		s.UpdateCodexUsageSnapshotFromHeaders(ctx, account, resp.Header)
 	}
 
 	return result, handleErr

@@ -2453,6 +2453,12 @@ export default {
         responsesWebsocketsV2PassthroughHint: '当前已开启自动透传：仅影响 HTTP 透传链路，不影响 WS mode。',
         codexCLIOnly: '仅允许 Codex 官方客户端',
         codexCLIOnlyDesc: '仅对 OpenAI OAuth 生效。开启后仅允许 Codex 官方客户端家族访问；关闭后完全绕过并保持原逻辑。',
+        specialRateLimitMode: '特殊 429 调度模式',
+        specialRateLimitModeDesc:
+          '仅对 OpenAI OAuth 生效。开启后忽略成功响应里的 Codex 周限/5h 本地推断；显式 429 先短暂摘出，窗口内累计达到阈值后才升级成长限流。',
+        special429TempUnschedSeconds: '429 短暂摘出秒数',
+        special429EscalationWindowSeconds: '429 升级统计窗口（秒）',
+        special429EscalationThreshold: '429 升级阈值',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       anthropic: {

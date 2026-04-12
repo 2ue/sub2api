@@ -2412,9 +2412,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
 		if account.Type == AccountTypeOAuth {
-			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
-			}
+			s.UpdateCodexUsageSnapshotFromHeaders(ctx, account, resp.Header)
 		}
 
 		if usage == nil {
@@ -2587,8 +2585,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 	}
 
-	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+	if account.Type == AccountTypeOAuth {
+		s.UpdateCodexUsageSnapshotFromHeaders(ctx, account, resp.Header)
 	}
 
 	if usage == nil {
@@ -4760,6 +4758,10 @@ func codexUsagePercentExhausted(value *float64) bool {
 	return value != nil && *value >= 100-1e-9
 }
 
+func shouldApplyOpenAICodexSnapshotRateLimit(account *Account) bool {
+	return account == nil || !account.IsOpenAISpecialRateLimitEnabled()
+}
+
 func codexRateLimitResetAtFromSnapshot(snapshot *OpenAICodexUsageSnapshot, fallbackNow time.Time) *time.Time {
 	if snapshot == nil {
 		return nil
@@ -4799,6 +4801,9 @@ func applyOpenAICodexRateLimitFromExtra(account *Account, now time.Time) (*time.
 	if account == nil || !account.IsOpenAI() {
 		return nil, false
 	}
+	if account.IsOpenAISpecialRateLimitEnabled() {
+		return nil, false
+	}
 	resetAt := codexRateLimitResetAtFromExtra(account.Extra, now)
 	if resetAt == nil {
 		return nil, false
@@ -4820,17 +4825,21 @@ func syncOpenAICodexRateLimitFromExtra(ctx context.Context, repo AccountReposito
 }
 
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
-func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
-	if snapshot == nil {
+func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, account *Account, snapshot *OpenAICodexUsageSnapshot) {
+	if account == nil || account.ID <= 0 || snapshot == nil {
 		return
 	}
 	if s == nil || s.accountRepo == nil {
 		return
 	}
 
+	accountID := account.ID
 	now := time.Now()
 	updates := buildCodexUsageExtraUpdates(snapshot, now)
 	resetAt := codexRateLimitResetAtFromSnapshot(snapshot, now)
+	if !shouldApplyOpenAICodexSnapshotRateLimit(account) {
+		resetAt = nil
+	}
 	if len(updates) == 0 && resetAt == nil {
 		return
 	}
@@ -4851,12 +4860,18 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 	}()
 }
 
-func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {
-	if accountID <= 0 || headers == nil {
+func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, account *Account, headers http.Header) {
+	if account == nil || account.ID <= 0 {
+		return
+	}
+	if s.rateLimitService != nil {
+		s.rateLimitService.handleOpenAISpecialSuccess(ctx, account)
+	}
+	if headers == nil {
 		return
 	}
 	if snapshot := ParseCodexRateLimitHeaders(headers); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, accountID, snapshot)
+		s.updateCodexUsageSnapshot(ctx, account, snapshot)
 	}
 }
 

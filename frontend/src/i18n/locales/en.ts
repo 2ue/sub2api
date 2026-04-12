@@ -2306,6 +2306,12 @@ export default {
         codexCLIOnly: 'Codex official clients only',
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
+        specialRateLimitMode: 'Special 429 scheduling mode',
+        specialRateLimitModeDesc:
+          'Only applies to OpenAI OAuth. When enabled, success headers no longer infer local Codex weekly/5h limits; explicit 429 first causes short temp-unsched, and only escalates to long rate limit after the threshold is hit within the window.',
+        special429TempUnschedSeconds: '429 temp-unsched seconds',
+        special429EscalationWindowSeconds: '429 escalation window (seconds)',
+        special429EscalationThreshold: '429 escalation threshold',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
       },
       anthropic: {

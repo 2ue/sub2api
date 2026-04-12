@@ -1209,6 +1209,68 @@
         </div>
       </div>
 
+      <div
+        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.specialRateLimitMode') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.specialRateLimitModeDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openAISpecialRateLimitEnabled = !openAISpecialRateLimitEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openAISpecialRateLimitEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openAISpecialRateLimitEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+
+        <div v-if="openAISpecialRateLimitEnabled" class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div>
+            <label class="input-label">{{ t('admin.accounts.openai.special429TempUnschedSeconds') }}</label>
+            <input
+              v-model.number="openAISpecial429TempUnschedSeconds"
+              type="number"
+              min="1"
+              step="1"
+              class="input"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.openai.special429EscalationWindowSeconds') }}</label>
+            <input
+              v-model.number="openAISpecial429EscalationWindowSeconds"
+              type="number"
+              min="1"
+              step="1"
+              class="input"
+            />
+          </div>
+          <div>
+            <label class="input-label">{{ t('admin.accounts.openai.special429EscalationThreshold') }}</label>
+            <input
+              v-model.number="openAISpecial429EscalationThreshold"
+              type="number"
+              min="1"
+              step="1"
+              class="input"
+            />
+          </div>
+        </div>
+      </div>
+
       <div>
         <div class="flex items-center justify-between">
           <div>
@@ -1897,6 +1959,13 @@ const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
+const DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS = 30
+const DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS = 360
+const DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD = 10
+const openAISpecialRateLimitEnabled = ref(false)
+const openAISpecial429TempUnschedSeconds = ref(DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS)
+const openAISpecial429EscalationWindowSeconds = ref(DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS)
+const openAISpecial429EscalationThreshold = ref(DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD)
 const anthropicPassthroughEnabled = ref(false)
 const editQuotaLimit = ref<number | null>(null)
 const editQuotaDailyLimit = ref<number | null>(null)
@@ -2066,6 +2135,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
+  openAISpecialRateLimitEnabled.value = false
+  openAISpecial429TempUnschedSeconds.value = DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS
+  openAISpecial429EscalationWindowSeconds.value = DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+  openAISpecial429EscalationThreshold.value = DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD
   anthropicPassthroughEnabled.value = false
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'apikey')) {
     openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
@@ -2083,6 +2156,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     })
     if (newAccount.type === 'oauth') {
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
+      openAISpecialRateLimitEnabled.value = extra?.openai_oauth_special_rate_limit_enabled === true
+      openAISpecial429TempUnschedSeconds.value = Number(
+        extra?.openai_oauth_special_429_temp_unsched_seconds ?? DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS
+      )
+      openAISpecial429EscalationWindowSeconds.value = Number(
+        extra?.openai_oauth_special_429_escalation_window_seconds ?? DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+      )
+      openAISpecial429EscalationThreshold.value = Number(
+        extra?.openai_oauth_special_429_escalation_threshold ?? DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD
+      )
     }
   }
   if (newAccount.platform === 'anthropic' && newAccount.type === 'apikey') {
@@ -3054,6 +3137,7 @@ const handleSubmit = async () => {
       const currentExtra = (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
+      const hadOpenAISpecialRateLimitEnabled = currentExtra.openai_oauth_special_rate_limit_enabled === true
       if (props.account.type === 'oauth') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
         newExtra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
@@ -3078,6 +3162,32 @@ const handleSubmit = async () => {
           newExtra.codex_cli_only = false
         } else {
           delete newExtra.codex_cli_only
+        }
+
+        if (openAISpecialRateLimitEnabled.value) {
+          newExtra.openai_oauth_special_rate_limit_enabled = true
+          newExtra.openai_oauth_special_429_temp_unsched_seconds = Math.max(
+            1,
+            openAISpecial429TempUnschedSeconds.value || DEFAULT_OPENAI_SPECIAL_429_TEMP_UNSCHED_SECONDS
+          )
+          newExtra.openai_oauth_special_429_escalation_window_seconds = Math.max(
+            1,
+            openAISpecial429EscalationWindowSeconds.value || DEFAULT_OPENAI_SPECIAL_429_ESCALATION_WINDOW_SECONDS
+          )
+          newExtra.openai_oauth_special_429_escalation_threshold = Math.max(
+            1,
+            openAISpecial429EscalationThreshold.value || DEFAULT_OPENAI_SPECIAL_429_ESCALATION_THRESHOLD
+          )
+        } else if (hadOpenAISpecialRateLimitEnabled) {
+          newExtra.openai_oauth_special_rate_limit_enabled = false
+          delete newExtra.openai_oauth_special_429_temp_unsched_seconds
+          delete newExtra.openai_oauth_special_429_escalation_window_seconds
+          delete newExtra.openai_oauth_special_429_escalation_threshold
+        } else {
+          delete newExtra.openai_oauth_special_rate_limit_enabled
+          delete newExtra.openai_oauth_special_429_temp_unsched_seconds
+          delete newExtra.openai_oauth_special_429_escalation_window_seconds
+          delete newExtra.openai_oauth_special_429_escalation_threshold
         }
       }
 

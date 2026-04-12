@@ -127,9 +127,12 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/api_inventory/
+!docs/api_inventory/**
+!docs/api_full_reference_v2/
+!docs/api_full_reference_v2/**
 .serena/
 .codex/
 frontend/coverage/
 aicodex
 output/
-

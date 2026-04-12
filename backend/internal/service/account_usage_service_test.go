@@ -103,7 +103,7 @@ func TestExtractOpenAICodexProbeSnapshotAccepts429WithResetAt(t *testing.T) {
 	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
 	headers.Set("x-codex-secondary-window-minutes", "300")
 
-	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{StatusCode: http.StatusTooManyRequests, Header: headers})
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{StatusCode: http.StatusTooManyRequests, Header: headers}, nil)
 	if err != nil {
 		t.Fatalf("extractOpenAICodexProbeSnapshot() error = %v", err)
 	}
@@ -112,6 +112,37 @@ func TestExtractOpenAICodexProbeSnapshotAccepts429WithResetAt(t *testing.T) {
 	}
 	if resetAt == nil {
 		t.Fatal("expected resetAt from exhausted codex headers")
+	}
+}
+
+func TestExtractOpenAICodexProbeSnapshot_SpecialModeSkipsResetAt(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "100")
+	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+
+	updates, resetAt, err := extractOpenAICodexProbeSnapshot(&http.Response{StatusCode: http.StatusOK, Header: headers}, account)
+	if err != nil {
+		t.Fatalf("extractOpenAICodexProbeSnapshot() error = %v", err)
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected codex probe updates from success headers")
+	}
+	if resetAt != nil {
+		t.Fatalf("expected nil resetAt for special mode, got %v", resetAt)
 	}
 }
 

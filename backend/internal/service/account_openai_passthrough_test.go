@@ -135,6 +135,46 @@ func TestAccount_IsCodexCLIOnlyEnabled(t *testing.T) {
 	})
 }
 
+func TestAccount_IsOpenAISpecialRateLimitEnabled(t *testing.T) {
+	t.Run("OpenAI OAuth 开启", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_special_rate_limit_enabled": true,
+			},
+		}
+		require.True(t, account.IsOpenAISpecialRateLimitEnabled())
+	})
+
+	t.Run("非 OAuth 或字段缺失默认关闭", func(t *testing.T) {
+		require.False(t, (&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		}}).IsOpenAISpecialRateLimitEnabled())
+		require.False(t, (&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{}}).IsOpenAISpecialRateLimitEnabled())
+	})
+}
+
+func TestAccount_OpenAISpecial429Defaults(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_oauth_special_rate_limit_enabled": true,
+		},
+	}
+	require.Equal(t, defaultOpenAISpecial429TempUnschedSeconds, account.GetOpenAISpecial429TempUnschedSeconds())
+	require.Equal(t, defaultOpenAISpecial429EscalationWindowSeconds, account.GetOpenAISpecial429EscalationWindowSeconds())
+	require.Equal(t, defaultOpenAISpecial429EscalationThreshold, account.GetOpenAISpecial429EscalationThreshold())
+
+	account.Extra["openai_oauth_special_429_temp_unsched_seconds"] = 45
+	account.Extra["openai_oauth_special_429_escalation_window_seconds"] = 720
+	account.Extra["openai_oauth_special_429_escalation_threshold"] = 3
+	require.Equal(t, 45, account.GetOpenAISpecial429TempUnschedSeconds())
+	require.Equal(t, 720, account.GetOpenAISpecial429EscalationWindowSeconds())
+	require.Equal(t, 3, account.GetOpenAISpecial429EscalationThreshold())
+}
+
 func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
 	t.Run("OAuth使用OAuth专用开关", func(t *testing.T) {
 		account := &Account{
