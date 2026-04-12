@@ -311,44 +311,145 @@
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
-    <ConfirmDialog
+    <BaseDialog
       :show="showOpenAISpecial429EnableDialog"
       :title="t('admin.accounts.bulkActions.enableOpenAISpecial429DialogTitle')"
-      :message="openAISpecial429EnableSummary"
-      :confirm-text="t('common.confirm')"
-      :cancel-text="t('common.cancel')"
-      @confirm="confirmBulkEnableOpenAISpecial429"
-      @cancel="closeOpenAISpecial429EnableDialog"
+      width="wide"
+      @close="closeOpenAISpecial429EnableDialog"
     >
-      <div class="space-y-3">
-        <p class="text-sm font-medium text-gray-800 dark:text-gray-100">
-          {{ t('admin.accounts.bulkActions.enableOpenAISpecial429Confirm', { count: pendingOpenAISpecial429EnableAccounts.length }) }}
-        </p>
-        <div
-          v-if="pendingOpenAISpecial429EnableAccounts.length > 0"
-          class="max-h-40 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
-        >
-          <div class="whitespace-pre-line">{{ formatOpenAISpecial429ConfirmList(pendingOpenAISpecial429EnableAccounts, 100) }}</div>
+      <div class="space-y-4">
+        <div class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/40">
+          <div class="flex items-start gap-3">
+            <Icon
+              :name="openAISpecial429ProbeRunning ? 'refresh' : openAISpecial429ProbeError ? 'exclamationTriangle' : 'checkCircle'"
+              size="md"
+              :class="[
+                'mt-0.5 flex-shrink-0',
+                openAISpecial429ProbeRunning
+                  ? 'animate-spin text-primary-500'
+                  : openAISpecial429ProbeError
+                    ? 'text-red-500'
+                    : 'text-green-500'
+              ]"
+            />
+            <div class="min-w-0 flex-1 space-y-1">
+              <p class="text-sm font-medium text-gray-900 dark:text-gray-100">
+                {{
+                  openAISpecial429ProbeRunning
+                    ? t('admin.accounts.bulkActions.probeOpenAISpecial429Running', { count: pendingOpenAISpecial429Selection.length })
+                    : openAISpecial429ProbeError || openAISpecial429EnableSummary
+                }}
+              </p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  openAISpecial429ProbeRunning
+                    ? t('admin.accounts.bulkActions.probeOpenAISpecial429RunningHint')
+                    : openAISpecial429ProbeHasCallable
+                      ? t('admin.accounts.bulkActions.probeOpenAISpecial429EnableHint', { count: pendingOpenAISpecial429EnableAccounts.length })
+                      : t('admin.accounts.bulkActions.probeOpenAISpecial429NoCallableDetail')
+                }}
+              </p>
+            </div>
+          </div>
         </div>
-        <label class="flex flex-col gap-1">
-          <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
-            {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyLabel') }}
-          </span>
-          <input
-            v-model="openAISpecial429EnableConcurrency"
-            type="number"
-            min="1"
-            step="1"
-            inputmode="numeric"
-            class="input"
-            :placeholder="t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyPlaceholder')"
-          />
-          <span class="text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyHint') }}
-          </span>
-        </label>
+
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <p class="text-sm font-medium text-gray-800 dark:text-gray-100">
+              {{ t('admin.accounts.bulkActions.probeOpenAISpecial429ResultTitle') }}
+            </p>
+            <span class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.bulkActions.selected', { count: openAISpecial429ProbeRows.length }) }}
+            </span>
+          </div>
+          <div class="max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-950/30">
+            <div
+              v-for="item in openAISpecial429ProbeRows"
+              :key="item.account_id"
+              class="flex items-start justify-between gap-3 border-b border-gray-100 px-4 py-3 last:border-b-0 dark:border-gray-800"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="truncate text-sm font-medium text-gray-900 dark:text-gray-100">{{ item.name }}</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500">#{{ item.account_id }}</span>
+                </div>
+                <p class="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">{{ item.message }}</p>
+              </div>
+              <span
+                :class="[
+                  'inline-flex shrink-0 rounded-full px-2 py-1 text-xs font-medium',
+                  getOpenAISpecial429ProbeStatusClass(item.status)
+                ]"
+              >
+                {{ getOpenAISpecial429ProbeStatusLabel(item.status) }}
+              </span>
+            </div>
+            <div
+              v-if="openAISpecial429ProbeRows.length === 0"
+              class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+            >
+              {{ t('admin.accounts.bulkActions.enableOpenAISpecial429NoTarget') }}
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!openAISpecial429ProbeRunning" class="space-y-3">
+          <p class="text-sm font-medium text-gray-800 dark:text-gray-100">
+            {{ t('admin.accounts.bulkActions.enableOpenAISpecial429Confirm', { count: pendingOpenAISpecial429EnableAccounts.length }) }}
+          </p>
+          <div
+            v-if="pendingOpenAISpecial429EnableAccounts.length > 0"
+            class="max-h-40 overflow-y-auto rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
+          >
+            <div class="whitespace-pre-line">{{ formatOpenAISpecial429ConfirmList(pendingOpenAISpecial429EnableAccounts, 100) }}</div>
+          </div>
+          <label class="flex flex-col gap-1">
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-200">
+              {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyLabel') }}
+            </span>
+            <input
+              v-model="openAISpecial429EnableConcurrency"
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              class="input"
+              :placeholder="t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyPlaceholder')"
+            />
+            <span class="text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.bulkActions.enableOpenAISpecial429ConcurrencyHint') }}
+            </span>
+          </label>
+        </div>
       </div>
-    </ConfirmDialog>
+
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            :disabled="openAISpecial429EnableSubmitting"
+            @click="closeOpenAISpecial429EnableDialog"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="openAISpecial429ProbeRunning || openAISpecial429EnableSubmitting || !openAISpecial429ProbeHasCallable"
+            @click="confirmBulkEnableOpenAISpecial429"
+          >
+            {{
+              openAISpecial429ProbeRunning
+                ? t('common.processing')
+                : openAISpecial429EnableSubmitting
+                  ? t('common.processing')
+                  : t('admin.accounts.bulkActions.enableOpenAISpecial429Action')
+            }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
   </AppLayout>
@@ -366,6 +467,7 @@ import { useSwipeSelect } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -397,6 +499,15 @@ import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, Admi
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+
+type OpenAISpecial429ProbeRowStatus = 'pending' | 'callable' | 'failed' | 'skipped'
+
+type OpenAISpecial429ProbeRow = {
+  account_id: number
+  name: string
+  status: OpenAISpecial429ProbeRowStatus
+  message: string
+}
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -439,7 +550,12 @@ const pendingOpenAISpecial429Selection = ref<number[]>([])
 const pendingOpenAISpecial429EnableIDs = ref<number[]>([])
 const pendingOpenAISpecial429EnableAccounts = ref<Array<{ account_id: number; name: string }>>([])
 const openAISpecial429EnableSummary = ref('')
-const openAISpecial429EnableConcurrency = ref('')
+const openAISpecial429EnableConcurrency = ref<string | number>('')
+const openAISpecial429ProbeRows = ref<OpenAISpecial429ProbeRow[]>([])
+const openAISpecial429ProbeRunning = ref(false)
+const openAISpecial429EnableSubmitting = ref(false)
+const openAISpecial429ProbeError = ref('')
+const openAISpecial429ProbeSeq = ref(0)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
@@ -1123,15 +1239,64 @@ const formatOpenAISpecial429ConfirmList = (accounts: Array<{ name: string }>, ma
   if (names.length <= maxNames) return preview
   return `${preview}\n... (+${names.length - maxNames})`
 }
+const openAISpecial429ProbeHasCallable = computed(() => pendingOpenAISpecial429EnableIDs.value.length > 0)
+const buildOpenAISpecial429ProbeRows = (accountIds: number[]): OpenAISpecial429ProbeRow[] => {
+  const accountMap = new Map(accounts.value.map((account) => [account.id, account]))
+  return accountIds.map((accountId) => {
+    const account = accountMap.get(accountId)
+    const normalizedName = String(account?.name ?? '').trim()
+    return {
+      account_id: accountId,
+      name: normalizedName || `#${accountId}`,
+      status: 'pending',
+      message: t('admin.accounts.bulkActions.probeOpenAISpecial429Pending')
+    }
+  })
+}
+const getOpenAISpecial429ProbeSkipReasonLabel = (reason: string) => {
+  const labels: Record<string, string> = {
+    not_found: t('admin.accounts.bulkActions.probeOpenAISpecial429SkipReasonNotFound'),
+    not_openai_oauth: t('admin.accounts.bulkActions.probeOpenAISpecial429SkipReasonNotOpenAIOAuth'),
+    special_mode_enabled: t('admin.accounts.bulkActions.probeOpenAISpecial429SkipReasonAlreadyEnabled'),
+    five_hour_limited: t('admin.accounts.bulkActions.probeOpenAISpecial429SkipReasonFiveHourLimited'),
+    not_week_limited: t('admin.accounts.bulkActions.probeOpenAISpecial429SkipReasonNotWeekLimited')
+  }
+  return labels[reason] || reason
+}
+const getOpenAISpecial429ProbeStatusLabel = (status: OpenAISpecial429ProbeRowStatus) => {
+  const labels: Record<OpenAISpecial429ProbeRowStatus, string> = {
+    pending: t('admin.accounts.bulkActions.probeOpenAISpecial429StatusPending'),
+    callable: t('admin.accounts.bulkActions.probeOpenAISpecial429StatusCallable'),
+    failed: t('admin.accounts.bulkActions.probeOpenAISpecial429StatusFailed'),
+    skipped: t('admin.accounts.bulkActions.probeOpenAISpecial429StatusSkipped')
+  }
+  return labels[status]
+}
+const getOpenAISpecial429ProbeStatusClass = (status: OpenAISpecial429ProbeRowStatus) => {
+  const classes: Record<OpenAISpecial429ProbeRowStatus, string> = {
+    pending: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
+    callable: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+    failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+    skipped: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  }
+  return classes[status]
+}
 const closeOpenAISpecial429EnableDialog = () => {
+  openAISpecial429ProbeSeq.value++
   showOpenAISpecial429EnableDialog.value = false
   pendingOpenAISpecial429Selection.value = []
   pendingOpenAISpecial429EnableIDs.value = []
   pendingOpenAISpecial429EnableAccounts.value = []
   openAISpecial429EnableSummary.value = ''
   openAISpecial429EnableConcurrency.value = ''
+  openAISpecial429ProbeRows.value = []
+  openAISpecial429ProbeRunning.value = false
+  openAISpecial429EnableSubmitting.value = false
+  openAISpecial429ProbeError.value = ''
 }
 const confirmBulkEnableOpenAISpecial429 = async () => {
+  if (openAISpecial429ProbeRunning.value || openAISpecial429EnableSubmitting.value) return
+
   const accountIds = [...pendingOpenAISpecial429EnableIDs.value]
   const selectedIds = [...pendingOpenAISpecial429Selection.value]
   if (!accountIds.length) {
@@ -1141,7 +1306,7 @@ const confirmBulkEnableOpenAISpecial429 = async () => {
     return
   }
 
-  const rawConcurrency = openAISpecial429EnableConcurrency.value.trim()
+  const rawConcurrency = String(openAISpecial429EnableConcurrency.value ?? '').trim()
   let concurrency: number | undefined
   if (rawConcurrency !== '') {
     const parsed = Number(rawConcurrency)
@@ -1152,6 +1317,7 @@ const confirmBulkEnableOpenAISpecial429 = async () => {
     concurrency = parsed
   }
 
+  openAISpecial429EnableSubmitting.value = true
   try {
     const enableResult = await adminAPI.accounts.enableOpenAISpecial429(accountIds, { concurrency })
     if (enableResult.target_count === 0) {
@@ -1175,37 +1341,83 @@ const confirmBulkEnableOpenAISpecial429 = async () => {
   } catch (error) {
     console.error('Failed to enable OpenAI special 429 mode:', error)
     appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    openAISpecial429EnableSubmitting.value = false
   }
 }
 const handleBulkProbeOpenAISpecial429 = async () => {
   const accountIds = [...selIds.value]
   if (!accountIds.length) return
 
+  const currentSeq = openAISpecial429ProbeSeq.value + 1
+  openAISpecial429ProbeSeq.value = currentSeq
+  pendingOpenAISpecial429Selection.value = accountIds
+  pendingOpenAISpecial429EnableIDs.value = []
+  pendingOpenAISpecial429EnableAccounts.value = []
+  openAISpecial429EnableSummary.value = ''
+  openAISpecial429EnableConcurrency.value = ''
+  openAISpecial429ProbeRows.value = buildOpenAISpecial429ProbeRows(accountIds)
+  openAISpecial429ProbeRunning.value = true
+  openAISpecial429EnableSubmitting.value = false
+  openAISpecial429ProbeError.value = ''
+  showOpenAISpecial429EnableDialog.value = true
+
   try {
     const probeResult = await adminAPI.accounts.probeOpenAISpecial429(accountIds)
+    if (currentSeq !== openAISpecial429ProbeSeq.value) return
+
     const failedCount = probeResult.results.filter((item) => !item.success).length
-    const summary = t('admin.accounts.bulkActions.probeOpenAISpecial429Summary', {
+    openAISpecial429EnableSummary.value = t('admin.accounts.bulkActions.probeOpenAISpecial429Summary', {
       eligible: probeResult.eligible_count,
       callable: probeResult.callable_count,
       failed: failedCount,
       skipped: probeResult.skipped.length
     })
+    const resultById = new Map(probeResult.results.map((item) => [item.account_id, item]))
+    const skippedById = new Map(probeResult.skipped.map((item) => [item.account_id, item]))
 
-    if (probeResult.callable_count === 0) {
-      appStore.showWarning(summary)
-      await reload()
-      return
-    }
+    openAISpecial429ProbeRows.value = accountIds.map((accountId) => {
+      const result = resultById.get(accountId)
+      if (result) {
+        return {
+          account_id: accountId,
+          name: String(result.name || '').trim() || `#${accountId}`,
+          status: result.success ? 'callable' : 'failed',
+          message: result.message || (result.success
+            ? t('admin.accounts.bulkActions.probeOpenAISpecial429CallableDefault')
+            : t('admin.accounts.bulkActions.probeOpenAISpecial429FailedDefault'))
+        }
+      }
 
-    pendingOpenAISpecial429Selection.value = accountIds
+      const skipped = skippedById.get(accountId)
+      if (skipped) {
+        return {
+          account_id: accountId,
+          name: String(skipped.name || '').trim() || `#${accountId}`,
+          status: 'skipped',
+          message: getOpenAISpecial429ProbeSkipReasonLabel(skipped.reason)
+        }
+      }
+
+      return {
+        account_id: accountId,
+        name: `#${accountId}`,
+        status: 'failed',
+        message: t('admin.accounts.bulkActions.probeOpenAISpecial429UnknownResult')
+      }
+    })
+
     pendingOpenAISpecial429EnableIDs.value = [...probeResult.callable_ids]
     pendingOpenAISpecial429EnableAccounts.value = [...probeResult.callable_accounts]
-    openAISpecial429EnableSummary.value = summary
-    openAISpecial429EnableConcurrency.value = ''
-    showOpenAISpecial429EnableDialog.value = true
   } catch (error) {
+    if (currentSeq !== openAISpecial429ProbeSeq.value) return
     console.error('Failed to probe OpenAI special 429 candidates:', error)
-    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+    openAISpecial429ProbeError.value = extractApiErrorMessage(error, t('common.error'))
+    appStore.showError(openAISpecial429ProbeError.value)
+  } finally {
+    if (currentSeq === openAISpecial429ProbeSeq.value) {
+      openAISpecial429ProbeRunning.value = false
+    }
   }
 }
 const handleBulkDisableOpenAISpecial429 = async () => {

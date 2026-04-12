@@ -1236,53 +1236,87 @@ func (h *AccountHandler) BatchProbeOpenAISpecial429(c *gin.Context) {
 		Skipped:          make([]openAISpecial429SkippedItem, 0),
 		Results:          make([]openAISpecial429ProbeAccountResult, 0),
 	}
+	const openAISpecial429ProbeConcurrency = 6
 
-	for _, accountID := range req.AccountIDs {
+	probeResults := make([]*openAISpecial429ProbeAccountResult, len(req.AccountIDs))
+	skippedResults := make([]*openAISpecial429SkippedItem, len(req.AccountIDs))
+	g, _ := errgroup.WithContext(ctx)
+	g.SetLimit(openAISpecial429ProbeConcurrency)
+
+	for idx, accountID := range req.AccountIDs {
 		account := accountsByID[accountID]
 		if account == nil {
-			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+			skippedResults[idx] = &openAISpecial429SkippedItem{
 				AccountID: accountID,
 				Reason:    "not_found",
-			})
+			}
 			continue
 		}
 
 		if reason := openAISpecial429ProbeSkipReason(account, now); reason != "" {
-			resp.Skipped = append(resp.Skipped, openAISpecial429SkippedItem{
+			skippedResults[idx] = &openAISpecial429SkippedItem{
 				AccountID: account.ID,
 				Name:      account.Name,
 				Reason:    reason,
-			})
+			}
 			continue
 		}
 
 		resp.EligibleCount++
-		result, runErr := h.accountTestService.RunTestBackground(ctx, account.ID, "")
-		resp.ProbedCount++
+		idx := idx
+		account := account
+		g.Go(func() error {
+			result, runErr := h.accountTestService.RunTestBackground(ctx, account.ID, "")
 
-		entry := openAISpecial429ProbeAccountResult{
-			AccountID: account.ID,
-			Name:      account.Name,
-			Success:   runErr == nil && result != nil && result.Status == "success",
-		}
-		if runErr != nil {
-			entry.Message = truncateOpenAISpecial429Message(runErr.Error())
-		} else if result == nil {
-			entry.Message = "empty_result"
-		} else if result.Status == "success" {
-			entry.Message = fmt.Sprintf("success (%dms)", result.LatencyMs)
-			resp.CallableCount++
-			resp.CallableIDs = append(resp.CallableIDs, account.ID)
-			resp.CallableAccounts = append(resp.CallableAccounts, openAISpecial429AccountSummary{
+			entry := openAISpecial429ProbeAccountResult{
 				AccountID: account.ID,
 				Name:      account.Name,
-			})
-		} else if result.ErrorMessage != "" {
-			entry.Message = truncateOpenAISpecial429Message(result.ErrorMessage)
-		} else {
-			entry.Message = truncateOpenAISpecial429Message(result.Status)
+				Success:   runErr == nil && result != nil && result.Status == "success",
+			}
+			if runErr != nil {
+				entry.Message = truncateOpenAISpecial429Message(runErr.Error())
+			} else if result == nil {
+				entry.Message = "empty_result"
+			} else if result.Status == "success" {
+				entry.Message = fmt.Sprintf("success (%dms)", result.LatencyMs)
+			} else if result.ErrorMessage != "" {
+				entry.Message = truncateOpenAISpecial429Message(result.ErrorMessage)
+			} else {
+				entry.Message = truncateOpenAISpecial429Message(result.Status)
+			}
+
+			probeResults[idx] = &entry
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	for idx, accountID := range req.AccountIDs {
+		if skippedResults[idx] != nil {
+			resp.Skipped = append(resp.Skipped, *skippedResults[idx])
+			continue
 		}
-		resp.Results = append(resp.Results, entry)
+
+		entry := probeResults[idx]
+		if entry == nil {
+			continue
+		}
+
+		resp.ProbedCount++
+		if entry.Success {
+			account := accountsByID[accountID]
+			resp.CallableCount++
+			resp.CallableIDs = append(resp.CallableIDs, accountID)
+			resp.CallableAccounts = append(resp.CallableAccounts, openAISpecial429AccountSummary{
+				AccountID: accountID,
+				Name:      account.Name,
+			})
+		}
+		resp.Results = append(resp.Results, *entry)
 	}
 
 	response.Success(c, resp)
