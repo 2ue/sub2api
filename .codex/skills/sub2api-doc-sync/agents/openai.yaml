@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sub2API Doc Sync"
+  short_description: "Sync Sub2API docs to the real implementation after refreshing git refs"
+  default_prompt: "Fetch the latest Sub2API refs, audit the API surface and related implementation details, then sync docs/api_full_reference_v2, docs/api_inventory, docs/ADMIN_PAYMENT_INTEGRATION_API.md, and docs/codex-auth-import-cn.md so they match the code exactly."
