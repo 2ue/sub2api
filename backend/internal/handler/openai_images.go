@@ -1,15 +1,9 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,223 +13,16 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
-const openAIImageMaxN = 10
+// Images handles OpenAI Images API requests.
+// POST /v1/images/generations
+// POST /v1/images/edits
+func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
+	streamStarted := false
+	defer h.recoverResponsesPanic(c, &streamStarted)
 
-// ImageGenerations handles OpenAI image generation requests.
-func (h *OpenAIGatewayHandler) ImageGenerations(c *gin.Context) {
-	body, req, ok := h.parseOpenAIImageGenerationRequest(c)
-	if !ok {
-		return
-	}
-	h.handleOpenAIImageRequest(c, body, req, "handler.openai_gateway.image_generations")
-}
-
-// ImageEdits handles OpenAI image edit requests.
-func (h *OpenAIGatewayHandler) ImageEdits(c *gin.Context) {
-	body, req, ok := h.parseOpenAIImageEditRequest(c)
-	if !ok {
-		return
-	}
-	h.handleOpenAIImageRequest(c, body, req, "handler.openai_gateway.image_edits")
-}
-
-func (h *OpenAIGatewayHandler) parseOpenAIImageGenerationRequest(c *gin.Context) ([]byte, *service.OpenAIImageRequest, bool) {
-	body, ok := h.readOpenAIImageRequestBody(c)
-	if !ok {
-		return nil, nil, false
-	}
-	if !gjson.ValidBytes(body) {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
-		return nil, nil, false
-	}
-
-	modelResult := gjson.GetBytes(body, "model")
-	if !modelResult.Exists() || modelResult.Type != gjson.String || strings.TrimSpace(modelResult.String()) == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return nil, nil, false
-	}
-	model := strings.TrimSpace(modelResult.String())
-	promptResult := gjson.GetBytes(body, "prompt")
-	if !promptResult.Exists() || promptResult.Type != gjson.String || strings.TrimSpace(promptResult.String()) == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "prompt is required")
-		return nil, nil, false
-	}
-	prompt := strings.TrimSpace(promptResult.String())
-
-	n, ok := parseOpenAIImageNJSON(body)
-	if !ok {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("n must be an integer between 1 and %d", openAIImageMaxN))
-		return nil, nil, false
-	}
-
-	imageSize, err := normalizeOpenAIImageSizeTier(strings.TrimSpace(gjson.GetBytes(body, "size").String()))
-	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, nil, false
-	}
-	if !isOpenAIImageResponseFormatValid(strings.TrimSpace(gjson.GetBytes(body, "response_format").String())) {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "response_format must be one of: url, b64_json")
-		return nil, nil, false
-	}
-
-	return body, &service.OpenAIImageRequest{
-		Body:         body,
-		Model:        model,
-		Prompt:       prompt,
-		N:            n,
-		ImageSize:    imageSize,
-		UpstreamPath: service.OpenAIImagesGenerationsPath,
-	}, true
-}
-
-func (h *OpenAIGatewayHandler) parseOpenAIImageEditRequest(c *gin.Context) ([]byte, *service.OpenAIImageRequest, bool) {
-	body, ok := h.readOpenAIImageRequestBody(c)
-	if !ok {
-		return nil, nil, false
-	}
-
-	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/form-data") {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Content-Type must be multipart/form-data")
-		return nil, nil, false
-	}
-	boundary := strings.TrimSpace(params["boundary"])
-	if boundary == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "multipart boundary is required")
-		return nil, nil, false
-	}
-
-	reader := multipart.NewReader(bytes.NewReader(body), boundary)
-	parts := make([]service.OpenAIImageMultipartPart, 0, 8)
-	model := ""
-	prompt := ""
-	sizeRaw := ""
-	responseFormat := ""
-	n := 1
-	imageCount := 0
-
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse multipart request")
-			return nil, nil, false
-		}
-
-		partData, err := io.ReadAll(part)
-		_ = part.Close()
-		if err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read multipart part")
-			return nil, nil, false
-		}
-
-		fieldName := part.FormName()
-		fileName := part.FileName()
-		contentType := part.Header.Get("Content-Type")
-
-		if fileName != "" {
-			parts = append(parts, service.OpenAIImageMultipartPart{
-				FieldName:   fieldName,
-				FileName:    fileName,
-				ContentType: contentType,
-				Data:        partData,
-				IsFile:      true,
-			})
-			if isOpenAIImagePrimaryField(fieldName) && len(partData) > 0 {
-				imageCount++
-			}
-			continue
-		}
-
-		value := string(partData)
-		parts = append(parts, service.OpenAIImageMultipartPart{
-			FieldName: fieldName,
-			Value:     value,
-		})
-
-		trimmed := strings.TrimSpace(value)
-		switch fieldName {
-		case "model":
-			model = trimmed
-		case "prompt":
-			prompt = trimmed
-		case "size":
-			sizeRaw = trimmed
-		case "response_format":
-			responseFormat = trimmed
-		case "n":
-			parsedN, valid := parseOpenAIImageNForm(trimmed)
-			if !valid {
-				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("n must be an integer between 1 and %d", openAIImageMaxN))
-				return nil, nil, false
-			}
-			n = parsedN
-		}
-	}
-
-	if model == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return nil, nil, false
-	}
-	if prompt == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "prompt is required")
-		return nil, nil, false
-	}
-	if imageCount == 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "at least one image file is required")
-		return nil, nil, false
-	}
-
-	imageSize, err := normalizeOpenAIImageSizeTier(sizeRaw)
-	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return nil, nil, false
-	}
-	if !isOpenAIImageResponseFormatValid(responseFormat) {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "response_format must be one of: url, b64_json")
-		return nil, nil, false
-	}
-
-	return body, &service.OpenAIImageRequest{
-		Model:          model,
-		Prompt:         prompt,
-		N:              n,
-		ImageSize:      imageSize,
-		UpstreamPath:   service.OpenAIImagesEditsPath,
-		MultipartParts: parts,
-	}, true
-}
-
-func (h *OpenAIGatewayHandler) readOpenAIImageRequestBody(c *gin.Context) ([]byte, bool) {
-	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
-	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
-			return nil, false
-		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
-		return nil, false
-	}
-	if len(body) == 0 {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
-		return nil, false
-	}
-	return body, true
-}
-
-func (h *OpenAIGatewayHandler) handleOpenAIImageRequest(
-	c *gin.Context,
-	body []byte,
-	req *service.OpenAIImageRequest,
-	logName string,
-) {
 	setOpenAIClientTransportHTTP(c)
 	requestStart := time.Now()
 
@@ -247,154 +34,155 @@ func (h *OpenAIGatewayHandler) handleOpenAIImageRequest(
 	if !h.ensureOpenAIImageCapabilityEnabled(c, apiKey) {
 		return
 	}
+
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
-
 	reqLog := requestLogger(
 		c,
-		logName,
+		"handler.openai_gateway.images",
 		zap.Int64("user_id", subject.UserID),
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
-		zap.String("model", req.Model),
 	)
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
 
-	setOpsRequestContext(c, req.Model, false, body)
-	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	if len(body) == 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
 
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, req.Model)
+	if isMultipartImagesContentType(c.GetHeader("Content-Type")) {
+		setOpsRequestContext(c, "", false, nil)
+	} else {
+		setOpsRequestContext(c, "", false, body)
+	}
+
+	parsed, err := h.gatewayService.ParseOpenAIImagesRequest(c, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+
+	reqLog = reqLog.With(
+		zap.String("model", parsed.Model),
+		zap.Bool("stream", parsed.Stream),
+		zap.Bool("multipart", parsed.Multipart),
+		zap.String("capability", string(parsed.RequiredCapability)),
+	)
+
+	if parsed.Multipart {
+		setOpsRequestContext(c, parsed.Model, parsed.Stream, nil)
+	} else {
+		setOpsRequestContext(c, parsed.Model, parsed.Stream, body)
+	}
+	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsed.Stream, false)))
+
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
+
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
+
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	streamStarted := false
-	maxWait := service.CalculateMaxWait(subject.Concurrency)
-	canWait, err := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
-	waitCounted := false
-	if err != nil {
-		reqLog.Warn("openai_image.user_wait_counter_increment_failed", zap.Error(err))
-	} else if !canWait {
-		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, parsed.Stream, &streamStarted, reqLog)
+	if !acquired {
 		return
 	}
-	if err == nil && canWait {
-		waitCounted = true
-	}
-	defer func() {
-		if waitCounted {
-			h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
-		}
-	}()
-
-	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, false, &streamStarted)
-	if err != nil {
-		reqLog.Warn("openai_image.user_slot_acquire_failed", zap.Error(err))
-		h.handleConcurrencyError(c, err, "user", false)
-		return
-	}
-	if waitCounted {
-		h.concurrencyHelper.DecrementWaitCount(c.Request.Context(), subject.UserID)
-		waitCounted = false
-	}
-	userReleaseFunc = wrapReleaseOnDone(c.Request.Context(), userReleaseFunc)
 	if userReleaseFunc != nil {
 		defer userReleaseFunc()
 	}
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
-		reqLog.Info("openai_image.billing_check_failed", zap.Error(err))
+		reqLog.Info("openai.images.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message := billingErrorDetails(err)
-		h.errorResponse(c, status, code, message)
+		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, body, req.Model+"\n"+req.Prompt)
+	sessionHash := ""
+	if parsed.Multipart {
+		sessionHash = h.gatewayService.GenerateSessionHashWithFallback(c, nil, parsed.StickySessionSeed())
+	} else {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+	}
+
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
-	unsupportedAccountSeen := false
+	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
-		selection, _, err := h.gatewayService.SelectAccountWithScheduler(
+		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
 			c.Request.Context(),
 			apiKey.GroupID,
-			"",
 			sessionHash,
-			req.Model,
+			parsed.Model,
 			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
+			parsed.RequiredCapability,
 		)
 		if err != nil {
+			reqLog.Warn("openai.images.account_select_failed",
+				zap.Error(err),
+				zap.Int("excluded_account_count", len(failedAccountIDs)),
+			)
 			if len(failedAccountIDs) == 0 {
-				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error())
-				return
-			}
-			if unsupportedAccountSeen && lastFailoverErr == nil {
-				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No image-capable OpenAI API key accounts")
+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
 				return
 			}
 			if lastFailoverErr != nil {
-				h.handleFailoverExhausted(c, lastFailoverErr, false)
+				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
-				h.handleFailoverExhaustedSimple(c, http.StatusBadGateway, false)
+				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 			}
 			return
 		}
+		if selection == nil || selection.Account == nil {
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
+			return
+		}
+
+		reqLog.Debug("openai.images.account_schedule_decision",
+			zap.String("layer", scheduleDecision.Layer),
+			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
+			zap.Int("candidate_count", scheduleDecision.CandidateCount),
+			zap.Int("top_k", scheduleDecision.TopK),
+			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
+			zap.Float64("load_skew", scheduleDecision.LoadSkew),
+		)
 
 		account := selection.Account
-		if account == nil {
-			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
+		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+		reqLog.Debug("openai.images.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
+		setOpsSelectedAccount(c, account.ID, account.Platform)
+
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, parsed.Stream, &streamStarted, reqLog)
+		if !acquired {
 			return
 		}
-		if !isOpenAIImageCapableAccount(account) {
-			if selection.ReleaseFunc != nil {
-				selection.ReleaseFunc()
-			}
-			failedAccountIDs[account.ID] = struct{}{}
-			unsupportedAccountSeen = true
-			reqLog.Warn("openai_image.account_not_supported",
-				zap.Int64("account_id", account.ID),
-				zap.String("account_type", account.Type),
-			)
-			continue
-		}
-
-		setOpsSelectedAccount(c, account.ID, account.Platform)
-		accountReleaseFunc := selection.ReleaseFunc
-		if !selection.Acquired {
-			if selection.WaitPlan == nil {
-				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
-				return
-			}
-			accountReleaseFunc, err = h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
-				c,
-				account.ID,
-				selection.WaitPlan.MaxConcurrency,
-				selection.WaitPlan.Timeout,
-				false,
-				&streamStarted,
-			)
-			if err != nil {
-				reqLog.Warn("openai_image.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				h.handleConcurrencyError(c, err, "account", false)
-				return
-			}
-		}
-		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.gatewayService.ForwardImageRequest(c.Request.Context(), c, account, req, channelMapping.MappedModel)
+		result, err := h.gatewayService.ForwardImages(c.Request.Context(), c, account, body, parsed, channelMapping.MappedModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
@@ -405,20 +193,40 @@ func (h *OpenAIGatewayHandler) handleOpenAIImageRequest(
 			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
 		}
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
-
+		if err == nil && result != nil && result.FirstTokenMs != nil {
+			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+		}
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if failoverErr.RetryableOnSameAccount {
+					retryLimit := account.GetPoolModeRetryCount()
+					if sameAccountRetryCount[account.ID] < retryLimit {
+						sameAccountRetryCount[account.ID]++
+						reqLog.Warn("openai.images.pool_mode_same_account_retry",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("retry_limit", retryLimit),
+							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+						)
+						select {
+						case <-c.Request.Context().Done():
+							return
+						case <-time.After(sameAccountRetryDelay):
+						}
+						continue
+					}
+				}
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
-					h.handleFailoverExhausted(c, failoverErr, false)
+					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 					return
 				}
 				switchCount++
-				reqLog.Warn("openai_image.upstream_failover_switching",
+				reqLog.Warn("openai.images.upstream_failover_switching",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
 					zap.Int("switch_count", switchCount),
@@ -427,25 +235,35 @@ func (h *OpenAIGatewayHandler) handleOpenAIImageRequest(
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-			wroteFallback := h.ensureForwardErrorResponse(c, false)
+			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
 				zap.Bool("fallback_error_response_written", wroteFallback),
 				zap.Error(err),
 			}
 			if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
-				reqLog.Warn("openai_image.forward_failed", fields...)
+				reqLog.Warn("openai.images.forward_failed", fields...)
 				return
 			}
-			reqLog.Error("openai_image.forward_failed", fields...)
+			reqLog.Error("openai.images.forward_failed", fields...)
 			return
 		}
 
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		if result != nil {
+			if account.Type == service.AccountTypeOAuth {
+				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
+			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+		} else {
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		}
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
+		if parsed.Multipart {
+			requestPayloadHash = service.HashUsageRequestPayload([]byte(parsed.StickySessionSeed()))
+		}
 
 		h.submitUsageRecordTask(func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -460,85 +278,27 @@ func (h *OpenAIGatewayHandler) handleOpenAIImageRequest(
 				IPAddress:          clientIP,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
-				ChannelUsageFields: channelMapping.ToUsageFields(req.Model, result.UpstreamModel),
+				ChannelUsageFields: channelMapping.ToUsageFields(parsed.Model, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
-					zap.String("component", logName),
+					zap.String("component", "handler.openai_gateway.images"),
 					zap.Int64("user_id", subject.UserID),
 					zap.Int64("api_key_id", apiKey.ID),
 					zap.Any("group_id", apiKey.GroupID),
-					zap.String("model", req.Model),
+					zap.String("model", parsed.Model),
 					zap.Int64("account_id", account.ID),
-				).Error("openai_image.record_usage_failed", zap.Error(err))
+				).Error("openai.images.record_usage_failed", zap.Error(err))
 			}
 		})
-		reqLog.Debug("openai_image.request_completed",
+
+		reqLog.Debug("openai.images.request_completed",
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", switchCount),
-			zap.Int("image_count", result.ImageCount),
-			zap.String("image_size", result.ImageSize),
 		)
 		return
 	}
 }
 
-func parseOpenAIImageNJSON(body []byte) (int, bool) {
-	value := gjson.GetBytes(body, "n")
-	if !value.Exists() {
-		return 1, true
-	}
-	raw := strings.TrimSpace(value.Raw)
-	if raw == "" {
-		return 1, false
-	}
-	n, err := strconv.Atoi(strings.Trim(raw, `"`))
-	if err != nil || n < 1 || n > openAIImageMaxN {
-		return 1, false
-	}
-	return n, true
-}
-
-func parseOpenAIImageNForm(raw string) (int, bool) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 1, true
-	}
-	n, err := strconv.Atoi(trimmed)
-	if err != nil || n < 1 || n > openAIImageMaxN {
-		return 1, false
-	}
-	return n, true
-}
-
-func isOpenAIImageResponseFormatValid(raw string) bool {
-	trimmed := strings.TrimSpace(raw)
-	return trimmed == "" || trimmed == "url" || trimmed == "b64_json"
-}
-
-func normalizeOpenAIImageSizeTier(raw string) (string, error) {
-	size := strings.ToLower(strings.TrimSpace(raw))
-	switch size {
-	case "", "1k", "1024x1024", "1024x1536", "1536x1024":
-		return "1K", nil
-	case "2k", "2048x2048", "2048x3072", "3072x2048", "1536x1536":
-		return "2K", nil
-	case "4k", "4096x4096", "4096x6144", "6144x4096":
-		return "4K", nil
-	default:
-		return "", fmt.Errorf("unsupported size: %s", raw)
-	}
-}
-
-func isOpenAIImagePrimaryField(name string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(name))
-	switch normalized {
-	case "image", "image[]", "images", "images[]":
-		return true
-	default:
-		return strings.HasPrefix(normalized, "image_") || strings.HasPrefix(normalized, "images_")
-	}
-}
-
-func isOpenAIImageCapableAccount(account *service.Account) bool {
-	return account != nil && account.IsOpenAIApiKey()
+func isMultipartImagesContentType(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
 }
