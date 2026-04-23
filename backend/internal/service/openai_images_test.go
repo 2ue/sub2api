@@ -105,6 +105,49 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_ExplicitSizeRequiresNative
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
 
+func TestNormalizeOpenAIImageSizeTier(t *testing.T) {
+	testCases := []struct {
+		name string
+		size string
+		want string
+	}{
+		{name: "empty defaults to 2k", size: "", want: "2K"},
+		{name: "auto defaults to 2k", size: "auto", want: "2K"},
+		{name: "square 1k", size: "1024x1024", want: "1K"},
+		{name: "portrait 2k", size: "1024x1536", want: "2K"},
+		{name: "square 2k", size: "2048x2048", want: "2K"},
+		{name: "landscape 4k", size: "3840x2160", want: "4K"},
+		{name: "portrait 4k", size: "2160x3840", want: "4K"},
+		{name: "invalid falls back to 2k", size: "not-a-size", want: "2K"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, normalizeOpenAIImageSizeTier(tc.size))
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForwardImages_RejectsOAuthAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	svc := &OpenAIGatewayService{}
+	result, err := svc.ForwardImages(
+		context.Background(),
+		c,
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		nil,
+		&OpenAIImagesRequest{Endpoint: openAIImagesGenerationsEndpoint, Model: "gpt-image-2"},
+		"",
+	)
+
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "openai images only support api key accounts")
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsNonImageModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","prompt":"draw a cat"}`)

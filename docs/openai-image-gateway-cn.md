@@ -78,9 +78,11 @@
 只有同时满足下面两个条件时，图片模型才会被对外暴露：
 
 - 当前分组 `allow_image_generation=true`
-- 可调度账号的 `model_mapping` 中显式出现了图片模型
+- 可调度 **API Key** 账号的 `model_mapping` 中显式出现了图片模型
 
 如果分组没有开启图片能力，即使底层账号映射了 `gpt-image-1` / `gpt-image-2`，`/v1/models` 也不会返回这些模型。
+
+如果只有 OAuth/ChatGPT 账号映射了图片模型，但没有可调度的 API Key 图片账号，`/v1/models` 也不会返回这些模型，避免客户端看到能用但实际调度不到。
 
 ### 2.5 图片计费链路现在是什么样
 
@@ -213,6 +215,13 @@
 ### 5.2 图片账号配置
 
 图片请求当前只支持 OpenAI API Key 类型账号，不支持 OAuth/ChatGPT 反代账号。
+
+并且本次实现已经把 `/v1/images/*` 的正式图片路由收口为 **仅 API 风格上游**：
+
+- `/v1/images/generations`
+- `/v1/images/edits`
+
+不会再为这些图片端点回退到 ChatGPT 网页 `backend-api` 生图链路，避免出现网页版协议抖动、模型暴露错误或计费链路不一致的问题。
 
 建议给图片账号配置显式的 `model_mapping`，至少把图片模型暴露出来：
 

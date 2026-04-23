@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -8761,6 +8762,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		if len(mapping) > 0 {
 			hasAnyMapping = true
 			for model := range mapping {
+				if openai.IsImageGenerationModel(model) && !acc.SupportsOpenAIImageCapability(OpenAIImagesCapabilityNative) {
+					continue
+				}
 				modelSet[model] = struct{}{}
 			}
 		}

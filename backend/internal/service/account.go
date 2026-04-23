@@ -931,11 +931,11 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 	}
 	switch capability {
 	case OpenAIImagesCapabilityBasic:
-		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
+		return a.Type == AccountTypeAPIKey
 	case OpenAIImagesCapabilityNative:
 		return a.Type == AccountTypeAPIKey
 	default:
-		return true
+		return a.Type == AccountTypeAPIKey
 	}
 }
 

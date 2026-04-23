@@ -133,7 +133,7 @@ func TestGatewayHandlerModels_OpenAIFallbackDoesNotAdvertiseUnconfiguredImageMod
 		Data []openai.Model `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, openai.DefaultModels, resp.Data)
+	require.Equal(t, filterOpenAIDefaultModelsForGroup(openai.DefaultModels, false), resp.Data)
 	for _, model := range resp.Data {
 		require.NotEqual(t, "gpt-image-1", model.ID)
 		require.NotEqual(t, "gpt-image-2", model.ID)
@@ -175,5 +175,46 @@ func TestGatewayHandlerModels_OpenAIImageMappingsHiddenWhenGroupDisallowsImages(
 		Data []openai.Model `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, openai.DefaultModels, resp.Data)
+	require.Equal(t, filterOpenAIDefaultModelsForGroup(openai.DefaultModels, false), resp.Data)
+}
+
+func TestGatewayHandlerModels_OpenAIImageMappingsHiddenWhenOnlyOAuthAccountsProvideThem(t *testing.T) {
+	groupID := int64(45)
+	repo := &gatewayModelsAccountRepoStub{
+		accountsByGroup: map[int64][]service.Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: service.PlatformOpenAI,
+					Type:     service.AccountTypeOAuth,
+					Credentials: map[string]any{
+						"model_mapping": map[string]any{
+							"gpt-image-2": "gpt-image-2",
+							"gpt-image-1": "gpt-image-1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	h := newGatewayModelsHandlerForTest(repo)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowImageGeneration: true},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data []openai.Model `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, filterOpenAIDefaultModelsForGroup(openai.DefaultModels, false), resp.Data)
+	for _, model := range resp.Data {
+		require.False(t, openai.IsImageGenerationModel(model.ID))
+	}
 }

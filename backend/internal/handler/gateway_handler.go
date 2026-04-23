@@ -912,7 +912,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if platform == "openai" {
 		c.JSON(http.StatusOK, gin.H{
 			"object": "list",
-			"data":   openai.DefaultModels,
+			"data":   filterOpenAIDefaultModelsForGroup(openai.DefaultModels, false),
 		})
 		return
 	}
@@ -933,6 +933,20 @@ func filterOpenAIImageModelsForGroup(models []string, allowImageModels bool) []s
 			continue
 		}
 		filtered = append(filtered, modelID)
+	}
+	return filtered
+}
+
+func filterOpenAIDefaultModelsForGroup(models []openai.Model, allowImageModels bool) []openai.Model {
+	if allowImageModels || len(models) == 0 {
+		return models
+	}
+	filtered := make([]openai.Model, 0, len(models))
+	for _, model := range models {
+		if openai.IsImageGenerationModel(model.ID) {
+			continue
+		}
+		filtered = append(filtered, model)
 	}
 	return filtered
 }

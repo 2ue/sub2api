@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -377,13 +376,50 @@ func isOpenAINativeImageOption(name string) bool {
 }
 
 func normalizeOpenAIImageSizeTier(size string) string {
-	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024":
+	normalized := strings.ToLower(strings.TrimSpace(size))
+	switch normalized {
+	case "", "auto":
+		return "2K"
+	}
+
+	width, height, ok := parseOpenAIImageSize(normalized)
+	if !ok {
+		return "2K"
+	}
+
+	return normalizeOpenAIImageSizeTierByDimensions(width, height)
+}
+
+func parseOpenAIImageSize(size string) (int, int, bool) {
+	parts := strings.Split(size, "x")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+
+	width, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || width <= 0 {
+		return 0, 0, false
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+func normalizeOpenAIImageSizeTierByDimensions(width, height int) string {
+	longEdge := width
+	if height > longEdge {
+		longEdge = height
+	}
+
+	switch {
+	case longEdge <= 1024:
 		return "1K"
-	case "1536x1024", "1024x1536", "1792x1024", "1024x1792", "", "auto":
+	case longEdge <= 2560:
 		return "2K"
 	default:
-		return "2K"
+		return "4K"
 	}
 }
 
@@ -398,14 +434,13 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
-	switch account.Type {
-	case AccountTypeAPIKey:
-		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
-	case AccountTypeOAuth:
-		return s.forwardOpenAIImagesOAuth(ctx, c, account, parsed, channelMappedModel)
-	default:
-		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
+	if account == nil {
+		return nil, fmt.Errorf("account is required")
 	}
+	if account.Type != AccountTypeAPIKey {
+		return nil, fmt.Errorf("openai images only support api key accounts")
+	}
+	return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
@@ -782,163 +817,6 @@ func extractOpenAIImageCountFromJSONBytes(body []byte) int {
 	return 0
 }
 
-func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
-	ctx context.Context,
-	c *gin.Context,
-	account *Account,
-	parsed *OpenAIImagesRequest,
-	channelMappedModel string,
-) (*OpenAIForwardResult, error) {
-	startTime := time.Now()
-	requestModel := strings.TrimSpace(parsed.Model)
-	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
-		requestModel = mapped
-	}
-	if err := validateOpenAIImagesModel(requestModel); err != nil {
-		return nil, err
-	}
-	logger.LegacyPrintf(
-		"service.openai_gateway",
-		"[OpenAI] Images request routing request_model=%s endpoint=%s account_type=%s uploads=%d",
-		requestModel,
-		parsed.Endpoint,
-		account.Type,
-		len(parsed.Uploads),
-	)
-
-	token, _, err := s.GetAccessToken(ctx, account)
-	if err != nil {
-		return nil, err
-	}
-	client, err := newOpenAIBackendAPIClient(resolveOpenAIProxyURL(account))
-	if err != nil {
-		return nil, err
-	}
-	headers, err := s.buildOpenAIBackendAPIHeaders(account, token)
-	if err != nil {
-		return nil, err
-	}
-	if bootstrapErr := bootstrapOpenAIBackendAPI(ctx, client, headers); bootstrapErr != nil {
-		logger.LegacyPrintf("service.openai_gateway", "OpenAI image bootstrap failed: %v", bootstrapErr)
-	}
-
-	chatReqs, err := fetchOpenAIChatRequirements(ctx, client, headers)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
-	if chatReqs.Arkose.Required {
-		return nil, s.wrapOpenAIImageBackendError(
-			ctx,
-			c,
-			account,
-			newOpenAIImageSyntheticStatusError(
-				http.StatusForbidden,
-				"chat-requirements requires unsupported challenge (arkose)",
-				openAIChatGPTChatRequirementsURL,
-			),
-		)
-	}
-
-	parentMessageID := uuid.NewString()
-	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
-	_ = initializeOpenAIImageConversation(ctx, client, headers)
-	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parentMessageID, chatReqs.Token, proofToken)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
-
-	uploads, err := uploadOpenAIImageFiles(ctx, client, headers, parsed.Uploads)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
-
-	convReq := buildOpenAIImageConversationRequest(parsed, parentMessageID, uploads)
-	if parsedContent, err := json.Marshal(convReq); err == nil {
-		setOpsUpstreamRequestBody(c, parsedContent)
-	}
-	convHeaders := cloneHTTPHeader(headers)
-	convHeaders.Set("Accept", "text/event-stream")
-	convHeaders.Set("Content-Type", "application/json")
-	convHeaders.Set("openai-sentinel-chat-requirements-token", chatReqs.Token)
-	if conduitToken != "" {
-		convHeaders.Set("x-conduit-token", conduitToken)
-	}
-	if proofToken != "" {
-		convHeaders.Set("openai-sentinel-proof-token", proofToken)
-	}
-
-	resp, err := client.R().
-		SetContext(ctx).
-		DisableAutoReadResponse().
-		SetHeaders(headerToMap(convHeaders)).
-		SetBodyJsonMarshal(convReq).
-		Post(openAIChatGPTConversationURL)
-	if err != nil {
-		return nil, fmt.Errorf("openai image conversation request failed: %w", err)
-	}
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-	}()
-	if resp.StatusCode >= 400 {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, handleOpenAIImageBackendError(resp))
-	}
-
-	conversationID, pointerInfos, usage, firstTokenMs, err := readOpenAIImageConversationStream(resp, startTime)
-	if err != nil {
-		return nil, err
-	}
-	pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, nil)
-	logger.LegacyPrintf(
-		"service.openai_gateway",
-		"[OpenAI] Image extraction stream conversation_id=%s total_assets=%d file_service_assets=%d direct_assets=%d",
-		conversationID,
-		len(pointerInfos),
-		countOpenAIFileServicePointerInfos(pointerInfos),
-		countOpenAIDirectImageAssets(pointerInfos),
-	)
-	lifecycleCtx, releaseLifecycleCtx := detachOpenAIImageLifecycleContext(ctx, openAIImageLifecycleTimeout)
-	defer releaseLifecycleCtx()
-	if conversationID != "" && !hasOpenAIFileServicePointerInfos(pointerInfos) {
-		polledPointers, pollErr := pollOpenAIImageConversation(lifecycleCtx, client, headers, conversationID)
-		if pollErr != nil {
-			return nil, s.wrapOpenAIImageBackendError(ctx, c, account, pollErr)
-		}
-		pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, polledPointers)
-	}
-	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
-	if len(pointerInfos) == 0 {
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Image extraction yielded no assets conversation_id=%s", conversationID)
-		return nil, fmt.Errorf("openai image conversation returned no downloadable images")
-	}
-
-	responseBody, imageCount, err := buildOpenAIImageResponse(lifecycleCtx, client, headers, conversationID, pointerInfos)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
-
-	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
-	return &OpenAIForwardResult{
-		RequestID:     resp.Header.Get("x-request-id"),
-		Usage:         usage,
-		Model:         requestModel,
-		UpstreamModel: requestModel,
-		Stream:        false,
-		Duration:      time.Since(startTime),
-		FirstTokenMs:  firstTokenMs,
-		ImageCount:    imageCount,
-		ImageSize:     parsed.SizeTier,
-	}, nil
-}
-
-func resolveOpenAIProxyURL(account *Account) string {
-	if account != nil && account.ProxyID != nil && account.Proxy != nil {
-		return account.Proxy.URL()
-	}
-	return ""
-}
-
 func newOpenAIBackendAPIClient(proxyURL string) (*req.Client, error) {
 	client := req.C().
 		SetTimeout(180 * time.Second).
@@ -951,70 +829,6 @@ func newOpenAIBackendAPIClient(proxyURL string) (*req.Client, error) {
 		client.SetProxyURL(trimmed)
 	}
 	return client, nil
-}
-
-func (s *OpenAIGatewayService) buildOpenAIBackendAPIHeaders(account *Account, token string) (http.Header, error) {
-	deviceID, sessionID := s.ensureOpenAIImageSessionCredentials(context.Background(), account)
-	headers := make(http.Header)
-	headers.Set("Authorization", "Bearer "+token)
-	headers.Set("Accept", "application/json")
-	headers.Set("Origin", "https://chatgpt.com")
-	headers.Set("Referer", "https://chatgpt.com/")
-	headers.Set("Sec-Fetch-Dest", "empty")
-	headers.Set("Sec-Fetch-Mode", "cors")
-	headers.Set("Sec-Fetch-Site", "same-origin")
-	headers.Set("User-Agent", openAIImageBackendUserAgent)
-	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
-		headers.Set("User-Agent", customUA)
-	}
-	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
-		headers.Set("chatgpt-account-id", chatgptAccountID)
-	}
-	if deviceID != "" {
-		headers.Set("oai-device-id", deviceID)
-		headers.Set("Cookie", "oai-did="+deviceID)
-	}
-	if sessionID != "" {
-		headers.Set("oai-session-id", sessionID)
-	}
-	return headers, nil
-}
-
-func (s *OpenAIGatewayService) ensureOpenAIImageSessionCredentials(ctx context.Context, account *Account) (string, string) {
-	if account == nil {
-		return "", ""
-	}
-	deviceID := account.GetOpenAIDeviceID()
-	sessionID := account.GetOpenAISessionID()
-	if deviceID != "" && sessionID != "" {
-		return deviceID, sessionID
-	}
-
-	updates := map[string]any{}
-	if deviceID == "" {
-		deviceID = uuid.NewString()
-		updates["openai_device_id"] = deviceID
-	}
-	if sessionID == "" {
-		sessionID = uuid.NewString()
-		updates["openai_session_id"] = sessionID
-	}
-	if account.Extra == nil {
-		account.Extra = map[string]any{}
-	}
-	for key, value := range updates {
-		account.Extra[key] = value
-	}
-	if len(updates) == 0 || s == nil || s.accountRepo == nil {
-		return deviceID, sessionID
-	}
-
-	updateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := s.accountRepo.UpdateExtra(updateCtx, account.ID, updates); err != nil {
-		logger.LegacyPrintf("service.openai_gateway", "persist openai image session creds failed: account=%d err=%v", account.ID, err)
-	}
-	return deviceID, sessionID
 }
 
 func bootstrapOpenAIBackendAPI(ctx context.Context, client *req.Client, headers http.Header) error {
@@ -1957,10 +1771,6 @@ func downloadOpenAIImageBytes(ctx context.Context, client *req.Client, headers h
 	return io.ReadAll(io.LimitReader(resp.Body, openAIImageMaxDownloadBytes))
 }
 
-func handleOpenAIImageBackendError(resp *req.Response) error {
-	return newOpenAIImageStatusError(resp, "backend-api request failed")
-}
-
 type openAIImageStatusError struct {
 	StatusCode      int
 	Message         string
@@ -2028,23 +1838,6 @@ func newOpenAIImageStatusError(resp *req.Response, fallback string) error {
 	}
 }
 
-func newOpenAIImageSyntheticStatusError(statusCode int, message string, requestURL string) *openAIImageStatusError {
-	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
-	if message == "" {
-		message = "openai image backend request failed"
-	}
-	var body []byte
-	if payload, err := json.Marshal(map[string]string{"detail": message}); err == nil {
-		body = payload
-	}
-	return &openAIImageStatusError{
-		StatusCode:   statusCode,
-		Message:      message,
-		ResponseBody: body,
-		URL:          strings.TrimSpace(requestURL),
-	}
-}
-
 func isOpenAIImageTransientConversationNotFoundError(err error) bool {
 	statusErr, ok := err.(*openAIImageStatusError)
 	if !ok || statusErr == nil || statusErr.StatusCode != http.StatusNotFound {
@@ -2062,58 +1855,6 @@ func isOpenAIImageTransientConversationNotFoundError(err error) bool {
 		return true
 	}
 	return strings.Contains(bodyMsg, "conversation") && strings.Contains(bodyMsg, "not found")
-}
-
-func (s *OpenAIGatewayService) wrapOpenAIImageBackendError(
-	ctx context.Context,
-	c *gin.Context,
-	account *Account,
-	err error,
-) error {
-	var statusErr *openAIImageStatusError
-	if !errors.As(err, &statusErr) || statusErr == nil {
-		return err
-	}
-
-	upstreamMsg := sanitizeUpstreamErrorMessage(statusErr.Message)
-	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		Platform:           account.Platform,
-		AccountID:          account.ID,
-		AccountName:        account.Name,
-		UpstreamStatusCode: statusErr.StatusCode,
-		UpstreamRequestID:  statusErr.RequestID,
-		UpstreamURL:        safeUpstreamURL(statusErr.URL),
-		Kind:               "request_error",
-		Message:            upstreamMsg,
-	})
-	setOpsUpstreamError(c, statusErr.StatusCode, upstreamMsg, "")
-
-	if s.shouldFailoverOpenAIUpstreamResponse(statusErr.StatusCode, upstreamMsg, statusErr.ResponseBody) {
-		if s.rateLimitService != nil {
-			s.rateLimitService.HandleUpstreamError(ctx, account, statusErr.StatusCode, statusErr.ResponseHeaders, statusErr.ResponseBody)
-		}
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: statusErr.StatusCode,
-			UpstreamRequestID:  statusErr.RequestID,
-			UpstreamURL:        safeUpstreamURL(statusErr.URL),
-			Kind:               "failover",
-			Message:            upstreamMsg,
-		})
-		retryableOnSameAccount := account.IsPoolMode() && isPoolModeRetryableStatus(statusErr.StatusCode)
-		if strings.Contains(strings.ToLower(statusErr.Message), "unsupported challenge") {
-			retryableOnSameAccount = false
-		}
-		return &UpstreamFailoverError{
-			StatusCode:             statusErr.StatusCode,
-			ResponseBody:           statusErr.ResponseBody,
-			RetryableOnSameAccount: retryableOnSameAccount,
-		}
-	}
-
-	return statusErr
 }
 
 func cloneHTTPHeader(src http.Header) http.Header {
