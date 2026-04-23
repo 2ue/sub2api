@@ -94,6 +94,8 @@ type Group struct {
 	ImagePrice1K *float64 `json:"image_price_1k"`
 	ImagePrice2K *float64 `json:"image_price_2k"`
 	ImagePrice4K *float64 `json:"image_price_4k"`
+	// OpenAI 图片能力开关（仅 openai 平台使用）
+	AllowImageGeneration bool `json:"allow_image_generation"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`

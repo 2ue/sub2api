@@ -1,7 +1,10 @@
 // Package openai provides helpers and types for OpenAI API integration.
 package openai
 
-import _ "embed"
+import (
+	_ "embed"
+	"strings"
+)
 
 // Model represents an OpenAI model
 type Model struct {
@@ -29,6 +32,10 @@ func DefaultModelIDs() []string {
 		ids[i] = m.ID
 	}
 	return ids
+}
+
+func IsImageGenerationModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-image-")
 }
 
 // DefaultTestModel default model for testing OpenAI accounts

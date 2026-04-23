@@ -29,6 +29,8 @@ type Group struct {
 	ImagePrice1K *float64
 	ImagePrice2K *float64
 	ImagePrice4K *float64
+	// OpenAI 图片能力开关（仅 openai 平台使用）
+	AllowImageGeneration bool
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
@@ -102,6 +104,10 @@ func (g *Group) GetImagePrice(imageSize string) *float64 {
 		// 未知尺寸默认按 2K 计费
 		return g.ImagePrice2K
 	}
+}
+
+func (g *Group) AllowsOpenAIImageGeneration() bool {
+	return g != nil && g.AllowImageGeneration
 }
 
 // IsGroupContextValid reports whether a group from context has the fields required for routing decisions.

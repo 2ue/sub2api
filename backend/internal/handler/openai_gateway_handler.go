@@ -15,6 +15,7 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -37,6 +38,8 @@ type OpenAIGatewayHandler struct {
 	cfg                     *config.Config
 }
 
+const openAIImageGenerationDisabledMessage = "Image generation is not enabled for this group"
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -45,6 +48,76 @@ func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackMode
 		return ""
 	}
 	return strings.TrimSpace(apiKey.Group.DefaultMappedModel)
+}
+
+func openAIImageGenerationAllowed(apiKey *service.APIKey) bool {
+	return apiKey != nil && apiKey.Group != nil && apiKey.Group.AllowsOpenAIImageGeneration()
+}
+
+func (h *OpenAIGatewayHandler) ensureOpenAIImageCapabilityEnabled(c *gin.Context, apiKey *service.APIKey) bool {
+	if openAIImageGenerationAllowed(apiKey) {
+		return true
+	}
+	h.errorResponse(c, http.StatusForbidden, "permission_error", openAIImageGenerationDisabledMessage)
+	return false
+}
+
+func (h *OpenAIGatewayHandler) ensureOpenAIImageModelAllowed(c *gin.Context, apiKey *service.APIKey, requestedModel string) bool {
+	if !openai.IsImageGenerationModel(requestedModel) {
+		return true
+	}
+	return h.ensureOpenAIImageCapabilityEnabled(c, apiKey)
+}
+
+func (h *OpenAIGatewayHandler) ensureOpenAIImageModelAllowedWS(wsConn *coderws.Conn, apiKey *service.APIKey, requestedModel string) bool {
+	if !openai.IsImageGenerationModel(requestedModel) || openAIImageGenerationAllowed(apiKey) {
+		return true
+	}
+	closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIImageGenerationDisabledMessage)
+	return false
+}
+
+func resolveOpenAIForwardPermissionModel(
+	account *service.Account,
+	requestedModel string,
+	channelMapping service.ChannelMappingResult,
+	defaultMappedModel string,
+) string {
+	effectiveRequestedModel := strings.TrimSpace(requestedModel)
+	if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
+		effectiveRequestedModel = strings.TrimSpace(channelMapping.MappedModel)
+	}
+	if account == nil {
+		if defaultMappedModel = strings.TrimSpace(defaultMappedModel); defaultMappedModel != "" {
+			return defaultMappedModel
+		}
+		return effectiveRequestedModel
+	}
+
+	mappedModel, matched := account.ResolveMappedModel(effectiveRequestedModel)
+	if !matched {
+		if defaultMappedModel = strings.TrimSpace(defaultMappedModel); defaultMappedModel != "" {
+			return defaultMappedModel
+		}
+	}
+	if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
+		return mappedModel
+	}
+	return effectiveRequestedModel
+}
+
+func openAIResolvedImageGenerationAllowed(
+	apiKey *service.APIKey,
+	account *service.Account,
+	requestedModel string,
+	channelMapping service.ChannelMappingResult,
+	defaultMappedModel string,
+) bool {
+	resolvedModel := resolveOpenAIForwardPermissionModel(account, requestedModel, channelMapping, defaultMappedModel)
+	if !openai.IsImageGenerationModel(resolvedModel) {
+		return true
+	}
+	return openAIImageGenerationAllowed(apiKey)
 }
 
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
@@ -164,6 +237,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	if !h.ensureOpenAIImageModelAllowed(c, apiKey, reqModel) {
+		return
+	}
 
 	streamResult := gjson.GetBytes(body, "stream")
 	if streamResult.Exists() && streamResult.Type != gjson.True && streamResult.Type != gjson.False {
@@ -303,6 +379,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+		}
+		if !openAIResolvedImageGenerationAllowed(apiKey, account, reqModel, channelMapping, "") {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.errorResponse(c, http.StatusForbidden, "permission_error", openAIImageGenerationDisabledMessage)
+			return
 		}
 		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -562,6 +645,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	if openai.IsImageGenerationModel(reqModel) && !openAIImageGenerationAllowed(apiKey) {
+		h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error", openAIImageGenerationDisabledMessage)
+		return
+	}
 	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
 	preferredMappedModel := resolveOpenAIMessagesDispatchMappedModel(apiKey, reqModel)
 	reqStream := gjson.GetBytes(body, "stream").Bool()
@@ -681,6 +768,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		forwardBody := body
 		if channelMappingMsg.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMappingMsg.MappedModel)
+		}
+		if !openAIResolvedImageGenerationAllowed(apiKey, account, reqModel, channelMappingMsg, defaultMappedModel) {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error", openAIImageGenerationDisabledMessage)
+			return
 		}
 		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 
@@ -1096,6 +1190,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
 		return
 	}
+	if !h.ensureOpenAIImageModelAllowedWS(wsConn, apiKey, reqModel) {
+		return
+	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
 	previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 	if previousResponseID != "" && previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
@@ -1200,6 +1297,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		accountReleaseFunc = fastReleaseFunc
 	}
 	currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
+	if !openAIResolvedImageGenerationAllowed(apiKey, account, reqModel, channelMappingWS, "") {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIImageGenerationDisabledMessage)
+		return
+	}
 	if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
@@ -1249,6 +1350,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
 			currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
 			return nil
+		},
+		ValidatePayload: func(turn int, originalModel string) error {
+			mapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, originalModel)
+			if openAIResolvedImageGenerationAllowed(apiKey, account, originalModel, mapping, "") {
+				return nil
+			}
+			return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIImageGenerationDisabledMessage, nil)
 		},
 		AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
 			releaseTurnSlots()

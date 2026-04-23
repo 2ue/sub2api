@@ -224,13 +224,17 @@ func applyAccountStatsCost(
 	accountID int64, groupID int64,
 	upstreamModel, requestedModel string,
 	tokens UsageTokens,
+	requestCount int,
 	totalCost float64,
 ) {
 	model := upstreamModel
 	if model == "" {
 		model = requestedModel
 	}
+	if requestCount <= 0 {
+		requestCount = 1
+	}
 	usageLog.AccountStatsCost = resolveAccountStatsCost(
-		ctx, cs, bs, accountID, groupID, model, tokens, 1, totalCost,
+		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost,
 	)
 }

@@ -219,8 +219,9 @@ func (e *OpenAIWSClientCloseError) Reason() string {
 
 // OpenAIWSIngressHooks 定义入站 WS 每个 turn 的生命周期回调。
 type OpenAIWSIngressHooks struct {
-	BeforeTurn func(turn int) error
-	AfterTurn  func(turn int, result *OpenAIForwardResult, turnErr error)
+	BeforeTurn      func(turn int) error
+	ValidatePayload func(turn int, originalModel string) error
+	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -3508,6 +3509,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				} else {
 					preferredConnID = stickyConnID
 				}
+			}
+		}
+		if hooks != nil && hooks.ValidatePayload != nil {
+			if err := hooks.ValidatePayload(turn+1, nextPayload.originalModel); err != nil {
+				return err
 			}
 		}
 		currentPayload = nextPayload.payloadRaw

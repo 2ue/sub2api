@@ -15,10 +15,12 @@ import (
 // ──────────────────────────────────────────────────────────
 
 const (
-	EndpointMessages        = "/v1/messages"
-	EndpointChatCompletions = "/v1/chat/completions"
-	EndpointResponses       = "/v1/responses"
-	EndpointGeminiModels    = "/v1beta/models"
+	EndpointMessages          = "/v1/messages"
+	EndpointChatCompletions   = "/v1/chat/completions"
+	EndpointResponses         = "/v1/responses"
+	EndpointImagesGenerations = "/v1/images/generations"
+	EndpointImagesEdits       = "/v1/images/edits"
+	EndpointGeminiModels      = "/v1beta/models"
 )
 
 // gin.Context keys used by the middleware and helpers below.
@@ -40,6 +42,10 @@ const (
 func NormalizeInboundEndpoint(path string) string {
 	path = strings.TrimSpace(path)
 	switch {
+	case strings.Contains(path, EndpointImagesGenerations):
+		return EndpointImagesGenerations
+	case strings.Contains(path, EndpointImagesEdits):
+		return EndpointImagesEdits
 	case strings.Contains(path, EndpointChatCompletions):
 		return EndpointChatCompletions
 	case strings.Contains(path, EndpointMessages):
@@ -57,8 +63,9 @@ func NormalizeInboundEndpoint(path string) string {
 // account platform and the normalized inbound endpoint.
 //
 // Platform-specific rules:
-//   - OpenAI always forwards to /v1/responses (with optional subpath
-//     such as /v1/responses/compact preserved from the raw URL).
+//   - OpenAI forwards image requests to /v1/images/* and all other
+//     requests to /v1/responses (with optional subpath such as
+//     /v1/responses/compact preserved from the raw URL).
 //   - Anthropic  → /v1/messages
 //   - Gemini     → /v1beta/models
 //   - Antigravity → /v1/messages (Claude) or gemini (Gemini)
@@ -69,6 +76,9 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case service.PlatformOpenAI:
+		if inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
+			return inbound
+		}
 		// OpenAI forwards everything to the Responses API.
 		// Preserve subresource suffix (e.g. /v1/responses/compact).
 		if suffix := responsesSubpathSuffix(rawRequestPath); suffix != "" {

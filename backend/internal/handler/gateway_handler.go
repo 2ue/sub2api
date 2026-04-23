@@ -864,12 +864,34 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if forcedPlatform, ok := middleware2.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forcedPlatform) != "" {
 		platform = forcedPlatform
 	}
+	allowImageModels := apiKey != nil && apiKey.Group != nil && apiKey.Group.AllowsOpenAIImageGeneration()
 
 	// Get available models from account configurations (without platform filter)
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
+	if platform == service.PlatformOpenAI && !allowImageModels {
+		availableModels = filterOpenAIImageModelsForGroup(availableModels, false)
+	}
 
 	if len(availableModels) > 0 {
-		// Build model list from whitelist
+		if platform == service.PlatformOpenAI {
+			models := make([]openai.Model, 0, len(availableModels))
+			for _, modelID := range availableModels {
+				models = append(models, openai.Model{
+					ID:          modelID,
+					Object:      "model",
+					Created:     0,
+					OwnedBy:     "openai",
+					Type:        "model",
+					DisplayName: modelID,
+				})
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"object": "list",
+				"data":   models,
+			})
+			return
+		}
+
 		models := make([]claude.Model, 0, len(availableModels))
 		for _, modelID := range availableModels {
 			models = append(models, claude.Model{
@@ -899,6 +921,20 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
+}
+
+func filterOpenAIImageModelsForGroup(models []string, allowImageModels bool) []string {
+	if allowImageModels || len(models) == 0 {
+		return models
+	}
+	filtered := make([]string, 0, len(models))
+	for _, modelID := range models {
+		if openai.IsImageGenerationModel(modelID) {
+			continue
+		}
+		filtered = append(filtered, modelID)
+	}
+	return filtered
 }
 
 // AntigravityModels 返回 Antigravity 支持的全部模型
