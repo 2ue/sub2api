@@ -280,7 +280,7 @@ func normalizeOpenAIImageSuccessBody(body []byte) []byte {
 	if data.Exists() && data.Type == gjson.JSON {
 		trimmed := strings.TrimSpace(data.Raw)
 		if strings.HasPrefix(trimmed, "{") {
-			normalized, err := sjson.SetRawBytes(body, "data", "["+trimmed+"]")
+			normalized, err := sjson.SetRawBytes(body, "data", []byte("["+trimmed+"]"))
 			if err == nil {
 				body = normalized
 			}
