@@ -154,7 +154,11 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 	if err := validateOpenAIImagesModel(req.Model); err != nil {
 		return nil, err
 	}
-	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
+	sizeTier, err := normalizeOpenAIImageSizeTierStrict(req.Size)
+	if err != nil {
+		return nil, err
+	}
+	req.SizeTier = sizeTier
 	req.RequiredCapability = classifyOpenAIImagesCapability(req)
 	return req, nil
 }
@@ -468,13 +472,21 @@ func isOpenAINativeImageOption(name string) bool {
 }
 
 func normalizeOpenAIImageSizeTier(size string) string {
+	tier, err := normalizeOpenAIImageSizeTierStrict(size)
+	if err != nil {
+		return "2K"
+	}
+	return tier
+}
+
+func normalizeOpenAIImageSizeTierStrict(size string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "1024x1024":
-		return "1K"
+		return "1K", nil
 	case "1536x1024", "1024x1536", "1792x1024", "1024x1792", "", "auto":
-		return "2K"
+		return "2K", nil
 	default:
-		return "2K"
+		return "", fmt.Errorf("unsupported image size %q", strings.TrimSpace(size))
 	}
 }
 
@@ -809,7 +821,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 
 	reader := bufio.NewReader(resp.Body)
 	usage := OpenAIUsage{}
-	imageCount := 0
+	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 
 	for {
@@ -827,9 +839,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			if data, ok := extractOpenAISSEDataLine(strings.TrimRight(string(line), "\r\n")); ok && data != "" && data != "[DONE]" {
 				dataBytes := []byte(data)
 				mergeOpenAIUsage(&usage, dataBytes)
-				if count := extractOpenAIImageCountFromJSONBytes(dataBytes); count > imageCount {
-					imageCount = count
-				}
+				imageCounter.AddSSEData(dataBytes)
 			}
 		}
 		if err == io.EOF {
@@ -839,7 +849,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			return OpenAIUsage{}, 0, firstTokenMs, err
 		}
 	}
-	return usage, imageCount, firstTokenMs, nil
+	return usage, imageCounter.Count(), firstTokenMs, nil
 }
 
 func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
@@ -863,14 +873,7 @@ func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
 }
 
 func extractOpenAIImageCountFromJSONBytes(body []byte) int {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		return 0
-	}
-	data := gjson.GetBytes(body, "data")
-	if data.Exists() && data.IsArray() {
-		return len(data.Array())
-	}
-	return 0
+	return countOpenAIResponseImageOutputsFromJSONBytes(body)
 }
 
 type openAIImagePointerInfo struct {
