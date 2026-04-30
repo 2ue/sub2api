@@ -471,14 +471,6 @@ func isOpenAINativeImageOption(name string) bool {
 	}
 }
 
-func normalizeOpenAIImageSizeTier(size string) string {
-	tier, err := normalizeOpenAIImageSizeTierStrict(size)
-	if err != nil {
-		return "2K"
-	}
-	return tier
-}
-
 func normalizeOpenAIImageSizeTierStrict(size string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "1024x1024":
