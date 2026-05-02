@@ -157,30 +157,48 @@ The system SHALL use actual generated image count for channel `billing_mode=imag
 - **AND** the request produces multiple images
 - **THEN** account stats cost is calculated with the actual image count
 
-### Requirement: Image size tier validation
-The system SHALL normalize image sizes to explicit billing tiers and SHALL reject unknown explicit OpenAI image sizes instead of silently billing them as `2K`.
+### Requirement: Image size tier normalization
+The system SHALL normalize OpenAI image sizes to explicit billing tiers for billing only. The system SHALL NOT reject requests locally because of an unknown or provider-invalid `size`; it SHALL forward the original size parameter upstream and let the official upstream API decide whether the request is valid.
 
 #### Scenario: OpenAI 1024 square maps to 1K
 - **WHEN** an OpenAI image request specifies `size="1024x1024"`
 - **THEN** `ImageSize` is `1K`
 
 #### Scenario: OpenAI landscape and portrait large sizes map to 2K
-- **WHEN** an OpenAI image request specifies `1536x1024`, `1024x1536`, `1792x1024`, or `1024x1792`
+- **WHEN** an OpenAI image request specifies `1536x1024`, `1024x1536`, `1792x1024`, `1024x1792`, `2048x2048`, `2048x1152`, or `1152x2048`
 - **THEN** `ImageSize` is `2K`
+
+#### Scenario: OpenAI gpt-image-2 4K presets map to 4K
+- **WHEN** an OpenAI `gpt-image-2` image request specifies `3840x2160` or `2160x3840`
+- **THEN** `ImageSize` is `4K`
 
 #### Scenario: OpenAI auto size maps to 2K
 - **WHEN** an OpenAI image request omits size or specifies `size="auto"`
 - **THEN** `ImageSize` is `2K`
 
-#### Scenario: Unknown explicit OpenAI size is rejected
-- **WHEN** an OpenAI image request specifies an explicit size that is not in the supported mapping table
-- **THEN** the system returns HTTP 400 before upstream dispatch
-- **AND** the system does not silently bill the request as `2K`
+#### Scenario: Custom OpenAI size is forwarded without local validation
+- **WHEN** an OpenAI image request specifies a custom explicit `WIDTHxHEIGHT` size
+- **THEN** the system forwards the request upstream
+- **AND** `ImageSize` is normalized to `2K` or `4K` for billing
 
-#### Scenario: OpenAI 4K is not inferred without verified mapping
-- **WHEN** an OpenAI request uses a size not explicitly mapped to `4K`
-- **THEN** the system does not assign `ImageSize=4K`
-- **AND** adding an OpenAI `4K` mapping requires a code change and test that names the exact supported size
+#### Scenario: Responses image tool without model uses default image billing model
+- **WHEN** a `/v1/responses` request uses an `image_generation` tool without `tool.model`
+- **THEN** image size validation and image billing use `gpt-image-2` as the image billing model
+
+#### Scenario: Invalid OpenAI size constraints are delegated upstream
+- **WHEN** an OpenAI image request specifies an explicit size that fails OpenAI size constraints
+- **THEN** the system forwards the request upstream
+- **AND** any invalid-size error comes from the upstream provider response
+
+#### Scenario: Custom OpenAI size tier mapping
+- **WHEN** a custom size cannot be parsed as positive `WIDTHxHEIGHT`
+- **THEN** `ImageSize` is `2K`
+- **WHEN** a custom size parses as positive `WIDTHxHEIGHT`
+- **AND** `WIDTH * HEIGHT` is no more than `2560x1440`
+- **THEN** `ImageSize` is `2K`
+- **WHEN** a custom size parses as positive `WIDTHxHEIGHT`
+- **AND** `WIDTH * HEIGHT` exceeds `2560x1440`
+- **THEN** `ImageSize` is `4K`
 
 ### Requirement: Image usage log semantics
 The system SHALL write usage logs for successful image generation with image billing metadata that matches the applied image pricing path.

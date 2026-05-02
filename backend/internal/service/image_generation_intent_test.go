@@ -84,6 +84,59 @@ func TestResolveOpenAIResponsesImageBillingConfigToolModelWins(t *testing.T) {
 	require.Equal(t, "2K", imageSize)
 }
 
+func TestResolveOpenAIResponsesImageBillingConfigSupportsOfficialAndCustomSizes(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     []byte
+		wantTier string
+	}{
+		{
+			name:     "official 2k landscape",
+			body:     []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-2","size":"2048x1152"}]}`),
+			wantTier: "2K",
+		},
+		{
+			name:     "official 4k landscape",
+			body:     []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-2","size":"3840x2160"}]}`),
+			wantTier: "4K",
+		},
+		{
+			name:     "custom valid 2k",
+			body:     []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation","model":"gpt-image-2","size":"1280x768"}]}`),
+			wantTier: "2K",
+		},
+		{
+			name:     "default image tool model supports flexible size",
+			body:     []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","size":"2048x1152"}]}`),
+			wantTier: "2K",
+		},
+		{
+			name:     "top level image size is moved into billing",
+			body:     []byte(`{"model":"gpt-image-2","size":"2048x2048","tools":[{"type":"image_generation","model":"gpt-image-2"}]}`),
+			wantTier: "2K",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			imageModel, imageSize, err := resolveOpenAIResponsesImageBillingConfigFromBody(tt.body, "requested-model")
+			require.NoError(t, err)
+			require.NotEmpty(t, imageModel)
+			require.Equal(t, tt.wantTier, imageSize)
+		})
+	}
+}
+
+func TestResolveOpenAIResponsesImageBillingConfigDoesNotRejectUnknownSizes(t *testing.T) {
+	imageModel, imageSize, err := resolveOpenAIResponsesImageBillingConfigFromBody(
+		[]byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-1.5","size":"2048x1152"}]}`),
+		"requested-model",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-image-1.5", imageModel)
+	require.Equal(t, "2K", imageSize)
+}
+
 func TestOpenAIImageOutputCounterDeduplicatesFinalImages(t *testing.T) {
 	counter := newOpenAIImageOutputCounter()
 	counter.AddSSEData([]byte(`{"type":"response.image_generation_call.partial_image","partial_image_b64":"abc"}`))

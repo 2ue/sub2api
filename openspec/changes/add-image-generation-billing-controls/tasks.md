@@ -42,9 +42,9 @@
 
 - [x] 5.1 Extend OpenAI Images API-key stream counting to handle `image_generation.completed`, `response.output_item.done`, and `response.completed`.
 - [x] 5.2 Reuse the same final-image de-duplication rules across Images API and Responses API paths.
-- [x] 5.3 Replace unknown explicit OpenAI image size fallback with HTTP 400 validation before upstream dispatch.
-- [x] 5.4 Keep OpenAI size mappings limited to the documented current table: `1024x1024` as `1K`, known large landscape/portrait and `auto`/empty as `2K`.
-- [x] 5.5 Ensure `4K` is not assigned on OpenAI requests unless a future code change adds an exact verified size and tests.
+- [x] 5.3 Keep unknown explicit OpenAI image sizes pass-through and delegate invalid-size errors to upstream.
+- [x] 5.4 Map documented OpenAI image sizes to `1K`/`2K`/`4K` billing tiers without rewriting request parameters.
+- [x] 5.5 Classify custom OpenAI `WIDTHxHEIGHT` sizes by `2560x1440` total-pixel boundary, falling back to `2K` when unparseable.
 
 ## 6. Billing And Usage Logs
 
@@ -67,6 +67,6 @@
 - [x] 7.6 Add billing tests for shared mode `rate_multiplier=0.15`, `image_price_1k=0.2`, final `actual_cost=0.03`.
 - [x] 7.7 Add billing tests for independent mode `rate_multiplier=0.15`, `image_rate_multiplier=1`, `image_price_1k=0.2`, final `actual_cost=0.2`.
 - [x] 7.8 Add channel image billing tests proving multi-image requests use `RequestCount=ImageCount` in both shared and independent multiplier modes.
-- [x] 7.9 Add size-tier tests for known OpenAI sizes and unknown explicit size rejection.
+- [x] 7.9 Add size-tier tests for known OpenAI sizes and unknown explicit size pass-through.
 - [x] 7.10 Add Responses image tool tests proving token usage is recorded but default billing remains image-mode only.
 - [x] 7.11 Update `2ue/image-billing-risk-analysis.md` or add a linked follow-up note that points to this OpenSpec change as the normalized solution.

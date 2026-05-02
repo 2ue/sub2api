@@ -173,6 +173,7 @@ func cloneRequestMapForImageIntent(body []byte) map[string]any {
 func resolveOpenAIResponsesImageBillingConfig(reqBody map[string]any, fallbackModel string) (string, string, error) {
 	imageModel := ""
 	imageSize := ""
+	hasImageTool := false
 	if reqBody != nil {
 		rawTools, _ := reqBody["tools"].([]any)
 		for _, rawTool := range rawTools {
@@ -180,6 +181,7 @@ func resolveOpenAIResponsesImageBillingConfig(reqBody map[string]any, fallbackMo
 			if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
 				continue
 			}
+			hasImageTool = true
 			imageModel = strings.TrimSpace(firstNonEmptyString(toolMap["model"]))
 			imageSize = strings.TrimSpace(firstNonEmptyString(toolMap["size"]))
 			break
@@ -189,19 +191,30 @@ func resolveOpenAIResponsesImageBillingConfig(reqBody map[string]any, fallbackMo
 		}
 	}
 	if imageModel == "" && reqBody != nil {
-		imageModel = strings.TrimSpace(firstNonEmptyString(reqBody["model"]))
+		bodyModel := strings.TrimSpace(firstNonEmptyString(reqBody["model"]))
+		if isOpenAIImageBillingModelAlias(bodyModel) || !hasImageTool {
+			imageModel = bodyModel
+		}
+	}
+	if imageModel == "" && hasImageTool {
+		imageModel = "gpt-image-2"
 	}
 	if imageModel == "" {
 		imageModel = strings.TrimSpace(fallbackModel)
 	}
-	sizeTier, err := normalizeOpenAIImageSizeTierStrict(imageSize)
-	if err != nil {
-		return "", "", err
-	}
+	sizeTier := normalizeOpenAIImageSizeTier(imageSize)
 	return imageModel, sizeTier, nil
 }
 
 func resolveOpenAIResponsesImageBillingConfigFromBody(body []byte, fallbackModel string) (string, string, error) {
 	reqBody := cloneRequestMapForImageIntent(body)
 	return resolveOpenAIResponsesImageBillingConfig(reqBody, fallbackModel)
+}
+
+func isOpenAIImageBillingModelAlias(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" {
+		return false
+	}
+	return isOpenAIImageGenerationModel(normalized) || strings.Contains(normalized, "image")
 }

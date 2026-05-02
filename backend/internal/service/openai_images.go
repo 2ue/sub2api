@@ -154,11 +154,7 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 	if err := validateOpenAIImagesModel(req.Model); err != nil {
 		return nil, err
 	}
-	sizeTier, err := normalizeOpenAIImageSizeTierStrict(req.Size)
-	if err != nil {
-		return nil, err
-	}
-	req.SizeTier = sizeTier
+	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
 	req.RequiredCapability = classifyOpenAIImagesCapability(req)
 	return req, nil
 }
@@ -471,15 +467,55 @@ func isOpenAINativeImageOption(name string) bool {
 	}
 }
 
-func normalizeOpenAIImageSizeTierStrict(size string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(size)) {
+func normalizeOpenAIImageSizeTier(size string) string {
+	trimmed := strings.TrimSpace(size)
+	normalized := strings.ToLower(trimmed)
+	switch normalized {
+	case "", "auto":
+		return "2K"
 	case "1024x1024":
-		return "1K", nil
-	case "1536x1024", "1024x1536", "1792x1024", "1024x1792", "", "auto":
-		return "2K", nil
-	default:
-		return "", fmt.Errorf("unsupported image size %q", strings.TrimSpace(size))
+		return "1K"
+	case "1536x1024", "1024x1536", "1792x1024", "1024x1792", "2048x2048", "2048x1152", "1152x2048":
+		return "2K"
+	case "3840x2160", "2160x3840":
+		return "4K"
 	}
+	width, height, ok := parseOpenAIImageSizeDimensions(trimmed)
+	if !ok {
+		return "2K"
+	}
+	return classifyUnknownOpenAIImageSizeTier(width, height)
+}
+
+const (
+	openAIImage2KMaxPixels = 2560 * 1440
+)
+
+func parseOpenAIImageSizeDimensions(size string) (int, int, bool) {
+	trimmed := strings.TrimSpace(size)
+	parts := strings.Split(strings.ToLower(trimmed), "x")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, false
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, false
+	}
+	if width <= 0 || height <= 0 {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
+func classifyUnknownOpenAIImageSizeTier(width int, height int) string {
+	if height > 0 && width > openAIImage2KMaxPixels/height {
+		return "4K"
+	}
+	return "2K"
 }
 
 func (s *OpenAIGatewayService) ForwardImages(

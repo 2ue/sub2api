@@ -7,7 +7,7 @@
 - `backend/internal/service/openai_gateway_service.go` 对 Codex CLI 会自动注入 `image_generation` tool；通用 `/v1/responses` 只记录日志，没有把图片工具产物数量写入 `OpenAIForwardResult.ImageCount`。
 - `backend/internal/service/billing_service.go` 的 `CalculateImageCost` 当前使用 `image_price_* * image_count * rate_multiplier`。这个行为本身可以作为默认兼容模式，但普通编码分组 `rate_multiplier=0.15` 且希望图片最终价为 `0.2/张` 时，管理员必须填写 `image_price=0.2/0.15`，不可读且不适合长期运营。
 - `backend/internal/service/openai_gateway_service.go` 和 `backend/internal/service/gateway_service.go` 的渠道图片计费路径当前传 `RequestCount: 1`，多图请求会按 1 次收费。
-- `backend/internal/service/openai_images.go` 的 OpenAI 图片尺寸分层对未知尺寸静默落到 `2K`，且当前 OpenAI 映射没有任何明确返回 `4K` 的路径。
+- `backend/internal/service/openai_images.go` 的 OpenAI 图片尺寸分层此前只覆盖少量固定尺寸；`gpt-image-2` 官方文档已经支持满足约束的自定义 `size`，因此本地计费必须能够对未知尺寸做稳定分档，同时不能因为本地映射不认识就提前拦截请求。
 
 用户澄清后的业务要求是：普通编码分组可以关闭生图，也可以开启生图；开启后默认继续共享现有分组倍率以保持兼容，但管理员可以打开“生图倍率独立”开关，改用单独的图片倍率输入框。图片分组是推荐的运营隔离方式，但不是唯一承载方式。
 
@@ -175,20 +175,31 @@ actual_cost = total_cost * image_multiplier
 
 通用 `/v1/responses + image_generation` 的混合文本+图片输出存在一个明确取舍：如果继续沿用“`ImageCount > 0` 时只按图片计费”的当前计费分支，用户可以在一次图片请求中夹带大量文本输出而只付图片费用；如果改成“图片费用 + 非图片 token 费用”，会改变当前 `billing_mode=image` 的单一计费语义，并可能让渠道图片单价不再是全包价格。本变更为最大兼容性不引入混合计费模式，但必须在 usage log 中完整记录 token 与 image_count，便于后续按数据决定是否新增 `image_plus_token` 计费模式。
 
-### 6. 尺寸档位
+### 6. 尺寸档位与参数透传
 
-OpenAI 图片尺寸分层必须显式映射：
+OpenAI 图片请求的 `size` 参数必须透传给上游；本地只做计费分档，不做 OpenAI 尺寸合法性校验。无论尺寸是否满足官方约束，本地都不能因为未知尺寸或 provider-invalid 尺寸返回 400；如果上游不接受该尺寸，由上游响应错误。
+
+官方 `gpt-image-2` 文档给出的常用尺寸与约束是本地计费分档的依据：
+
+- 常用尺寸：`1024x1024`、`1536x1024`、`1024x1536`、`2048x2048`、`2048x1152`、`3840x2160`、`2160x3840`、`auto`。
+- 自定义尺寸：官方支持满足约束的任意 `size`，包括边长、16 像素倍数、长短边比例、总像素范围等约束。
+- `2560x1440` 是 2K/QHD 参考边界；超过 `2560x1440` 总像素的输出进入更高档位风险区。
+
+OpenAI 图片尺寸分层必须按以下规则：
 
 ```text
+empty, auto                       => 2K
 1024x1024                         => 1K
 1536x1024, 1024x1536              => 2K
 1792x1024, 1024x1792              => 2K
-empty, auto                       => 2K
+2048x2048, 2048x1152, 1152x2048   => 2K
+3840x2160, 2160x3840              => 4K
+未知且无法解析为正整数 WIDTHxHEIGHT => 2K
+未知且 WIDTH * HEIGHT <= 2560*1440 => 2K
+未知且 WIDTH * HEIGHT > 2560*1440  => 4K
 ```
 
-当前代码没有可证明的 OpenAI `4K` 尺寸映射，因此 OpenAI 路径不能把未知显式尺寸静默计为 `2K`，也不能臆造 `4K` 映射。实现必须对未知显式 OpenAI 尺寸返回 400；只有后续代码中加入经过验证的尺寸映射和测试后，才能让 OpenAI 请求命中 `4K`。
-
-`image_price_4k` 继续保留，用于已有非 OpenAI 图片路径或未来明确支持的 4K 映射。
+这个规则只决定 `ImageSize` 和扣费档位，不修改请求体，不删除未知参数，不把未知尺寸改写成预设尺寸。
 
 ## Risks / Trade-offs
 
@@ -196,6 +207,7 @@ empty, auto                       => 2K
 - 默认共享现有有效倍率仍保留“图片最终价不直观”的问题 → 这是兼容性选择；需要直观设置图片最终价的分组必须打开 `image_rate_independent`。
 - 独立图片倍率不会读取用户专属普通倍率 → 这是目标行为；如需要用户级图片独立倍率，应作为后续独立需求实现。
 - 通用 Responses 图片工具可能同时输出文本和图片 → 本变更默认仍按图片请求语义计费并完整记录 token；若业务要求文本也收费，应新增独立的混合计费模式，不能混入本次兼容性变更。
+- 本地不再拦截未知或 provider-invalid OpenAI 尺寸 → 非法尺寸会消耗一次上游请求失败成本和用户体验往返，但这是为了保证参数透传、兼容官方新增尺寸和第三方兼容提供商；计费只在成功产出最终图片后发生。
 - Responses 流式解析需要在客户端断开后继续 drain 上游以完成计费 → 沿用当前流式处理“客户端断开后继续读取上游用于计费”的模式，并只新增轻量 JSON 路径提取。
 - 预扣费不在本变更中实现 → 继续使用现有成功后扣费模型，避免失败请求退款、流式中断退款和图片数量未确定时预估错误。
 

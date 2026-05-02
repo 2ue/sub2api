@@ -75,9 +75,85 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
 
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsUnknownExplicitSize(t *testing.T) {
+func TestOpenAIGatewayServiceParseOpenAIImagesRequest_NormalizesOfficialAndCustomSizes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"2048x2048"}`)
+
+	tests := []struct {
+		size     string
+		wantTier string
+	}{
+		{size: "1024x1024", wantTier: "1K"},
+		{size: "1536x1024", wantTier: "2K"},
+		{size: "1024x1536", wantTier: "2K"},
+		{size: "2048x2048", wantTier: "2K"},
+		{size: "2048x1152", wantTier: "2K"},
+		{size: "3840x2160", wantTier: "4K"},
+		{size: "2160x3840", wantTier: "4K"},
+		{size: "1024X768", wantTier: "2K"},
+		{size: "1280x768", wantTier: "2K"},
+		{size: "2560x1440", wantTier: "2K"},
+		{size: "2560x1600", wantTier: "4K"},
+		{size: "auto", wantTier: "2K"},
+	}
+
+	svc := &OpenAIGatewayService{}
+	for _, tt := range tests {
+		t.Run(tt.size, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"` + tt.size + `"}`)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = req
+
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			require.NotNil(t, parsed)
+			require.Equal(t, tt.size, parsed.Size)
+			require.Equal(t, tt.wantTier, parsed.SizeTier)
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceParseOpenAIImagesRequest_UnknownSizesDoNotBlockPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		size     string
+		wantTier string
+	}{
+		{size: "2048x1153", wantTier: "2K"},
+		{size: "4096x1024", wantTier: "4K"},
+		{size: "3840x1024", wantTier: "4K"},
+		{size: "512x512", wantTier: "2K"},
+		{size: "invalid", wantTier: "2K"},
+		{size: "999999999999999999999999999x2", wantTier: "2K"},
+	}
+
+	svc := &OpenAIGatewayService{}
+	for _, tt := range tests {
+		t.Run(tt.size, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"` + tt.size + `"}`)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = req
+
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			require.NotNil(t, parsed)
+			require.Equal(t, tt.size, parsed.Size)
+			require.Equal(t, tt.wantTier, parsed.SizeTier)
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceParseOpenAIImagesRequest_LegacyImageModelUnknownSizePassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-1.5","prompt":"draw a cat","size":"2048x1152"}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -87,9 +163,10 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsUnknownExplicitSize
 
 	svc := &OpenAIGatewayService{}
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.Error(t, err)
-	require.Nil(t, parsed)
-	require.Contains(t, err.Error(), "unsupported image size")
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	require.Equal(t, "2048x1152", parsed.Size)
+	require.Equal(t, "2K", parsed.SizeTier)
 }
 
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEditWithMaskAndNativeOptions(t *testing.T) {
