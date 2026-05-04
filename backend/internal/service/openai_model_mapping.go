@@ -20,25 +20,6 @@ func resolveOpenAIForwardModel(account *Account, requestedModel, defaultMappedMo
 	return mappedModel
 }
 
-func isExplicitCodexModel(model string) bool {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return false
-	}
-	model = canonicalizeOpenAIModelAliasSpelling(model)
-	if model == "" {
-		return false
-	}
-	if getNormalizedCodexModel(model) != "" {
-		return true
-	}
-	if strings.HasSuffix(model, "-openai-compact") {
-		base := strings.TrimSuffix(model, "-openai-compact")
-		return getNormalizedCodexModel(base) != ""
-	}
-	return false
-}
-
 // resolveOpenAICompactForwardModel determines the compact-only upstream model
 // for /responses/compact requests. It never affects normal /responses traffic.
 // When no compact-specific mapping matches, the input model is returned as-is.
