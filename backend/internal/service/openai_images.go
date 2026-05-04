@@ -640,7 +640,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	var usage OpenAIUsage
 	imageCount := parsed.N
 	var firstTokenMs *int
-	if parsed.Stream {
+	if parsed.Stream && isEventStreamResponse(resp.Header) {
 		streamUsage, streamCount, ttft, err := s.handleOpenAIImagesStreamingResponse(resp, c, startTime)
 		if err != nil {
 			if streamCount > 0 {
@@ -870,6 +870,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	var firstTokenMs *int
 	clientDisconnected := false
 	lastDownstreamWriteAt := time.Now()
+	var fallbackBody bytes.Buffer
+	fallbackBytes := int64(0)
+	fallbackLimit := resolveUpstreamResponseReadLimit(s.cfg)
+	seenSSEData := false
+	fallbackTooLarge := false
 
 	processLine := func(line []byte) {
 		if len(line) == 0 {
@@ -889,11 +894,36 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			}
 		}
 
-		if data, ok := extractOpenAISSEDataLine(strings.TrimRight(string(line), "\r\n")); ok && data != "" && data != "[DONE]" {
-			dataBytes := []byte(data)
-			mergeOpenAIUsage(&usage, dataBytes)
-			imageCounter.AddSSEData(dataBytes)
+		if data, ok := extractOpenAISSEDataLine(strings.TrimRight(string(line), "\r\n")); ok {
+			if data != "" && data != "[DONE]" {
+				seenSSEData = true
+				fallbackBody.Reset()
+				fallbackBytes = 0
+				dataBytes := []byte(data)
+				mergeOpenAIUsage(&usage, dataBytes)
+				imageCounter.AddSSEData(dataBytes)
+			}
+		} else if !seenSSEData && !fallbackTooLarge {
+			fallbackBytes += int64(len(line))
+			if fallbackBytes <= fallbackLimit {
+				_, _ = fallbackBody.Write(line)
+			} else {
+				fallbackTooLarge = true
+				fallbackBody.Reset()
+			}
 		}
+	}
+
+	finalizeFallbackBody := func() {
+		if seenSSEData || fallbackBody.Len() == 0 {
+			return
+		}
+		body := bytes.TrimSpace(fallbackBody.Bytes())
+		if len(body) == 0 {
+			return
+		}
+		mergeOpenAIUsage(&usage, body)
+		imageCounter.AddJSONResponse(body)
 	}
 
 	streamInterval := s.openAIImageStreamDataInterval()
@@ -910,6 +940,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				return usage, imageCounter.Count(), firstTokenMs, err
 			}
 		}
+		finalizeFallbackBody()
 		return usage, imageCounter.Count(), firstTokenMs, nil
 	}
 
@@ -975,6 +1006,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				finalizeFallbackBody()
 				return usage, imageCounter.Count(), firstTokenMs, nil
 			}
 			if ev.err != nil {
@@ -1019,6 +1051,29 @@ func (s *OpenAIGatewayService) openAIImageStreamKeepaliveInterval() time.Duratio
 		return 0
 	}
 	return time.Duration(s.cfg.Gateway.ImageStreamKeepaliveInterval) * time.Second
+}
+
+func extractOpenAIImagesBillableCountFromJSONBytes(body []byte) int {
+	if count := extractOpenAIImageCountFromJSONBytes(body); count > 0 {
+		return count
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return 0
+	}
+	if count := int(gjson.GetBytes(body, "usage.images").Int()); count > 0 {
+		return count
+	}
+	if count := int(gjson.GetBytes(body, "tool_usage.image_gen.images").Int()); count > 0 {
+		return count
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(body, "type").String())
+	if eventType == "" || !strings.HasSuffix(eventType, ".completed") {
+		return 0
+	}
+	if gjson.GetBytes(body, "b64_json").Exists() || gjson.GetBytes(body, "url").Exists() {
+		return 1
+	}
+	return 0
 }
 
 func mergeOpenAIUsage(dst *OpenAIUsage, body []byte) {
