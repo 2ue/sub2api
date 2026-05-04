@@ -25,11 +25,10 @@ func isExplicitCodexModel(model string) bool {
 	if model == "" {
 		return false
 	}
-	if strings.Contains(model, "/") {
-		parts := strings.Split(model, "/")
-		model = parts[len(parts)-1]
+	model = canonicalizeOpenAIModelAliasSpelling(model)
+	if model == "" {
+		return false
 	}
-	model = strings.ToLower(strings.TrimSpace(model))
 	if getNormalizedCodexModel(model) != "" {
 		return true
 	}

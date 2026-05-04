@@ -451,13 +451,9 @@ func normalizeCodexModel(model string) string {
 		return model
 	}
 
-	modelID := model
-	if strings.Contains(modelID, "/") {
-		parts := strings.Split(modelID, "/")
-		modelID = parts[len(parts)-1]
-	}
+	modelID := lastOpenAIModelSegment(model)
 
-	if mapped := getNormalizedCodexModel(modelID); mapped != "" {
+	if mapped := normalizeKnownOpenAICodexModel(modelID); mapped != "" {
 		return mapped
 	}
 
