@@ -840,6 +840,8 @@ export default {
     perMillionTokens: '/ 1M tokens',
     unitPrice: 'Per-request price',
     imageUnitPrice: 'Per-image price',
+    imageTotalPrice: 'Image total price',
+    imageCount: 'Image count',
     cacheRead: 'Read',
     cacheWrite: 'Write',
     serviceTier: 'Service tier',

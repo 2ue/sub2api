@@ -844,6 +844,8 @@ export default {
     perMillionTokens: '/ 1M Token',
     unitPrice: '单次价格',
     imageUnitPrice: '单张价格',
+    imageTotalPrice: '图片总价',
+    imageCount: '图片张数',
     cacheRead: '读取',
     cacheWrite: '写入',
     serviceTier: '服务档位',
