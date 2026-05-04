@@ -157,3 +157,28 @@ func TestOpenAIImageOutputCounterCountsImagesAPIStreamShapes(t *testing.T) {
 	dataCounter.AddSSEData([]byte(`{"data":[{"b64_json":"a"},{"b64_json":"b"},{"b64_json":"c"}]}`))
 	require.Equal(t, 3, dataCounter.Count())
 }
+
+func TestOpenAIImageOutputCounterCountsMultilineSSEDataPayload(t *testing.T) {
+	counter := newOpenAIImageOutputCounter()
+	counter.AddSSEData([]byte("{\"type\":\"image_generation.completed\",\n\"b64_json\":\"final-a\"}"))
+	require.Equal(t, 1, counter.Count())
+}
+
+func TestOpenAIImageOutputCounterCountsMultilineSSEBodyPayload(t *testing.T) {
+	counter := newOpenAIImageOutputCounter()
+	counter.AddSSEBody(
+		"data: {\"type\":\"image_generation.completed\",\n" +
+			"data: \"b64_json\":\"final-a\"}\n\n" +
+			"data: [DONE]\n\n",
+	)
+	require.Equal(t, 1, counter.Count())
+}
+
+func TestOpenAIImageOutputCounterFallsBackForInvalidMultilineSSEBody(t *testing.T) {
+	counter := newOpenAIImageOutputCounter()
+	counter.AddSSEBody(
+		"data: {\"type\":\"image_generation.completed\",\"b64_json\":\"final-a\"}\n" +
+			"data: {\"type\":\"image_generation.completed\",\"b64_json\":\"final-b\"}\n\n",
+	)
+	require.Equal(t, 2, counter.Count())
+}

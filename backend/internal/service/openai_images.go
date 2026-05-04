@@ -875,6 +875,19 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	fallbackLimit := resolveUpstreamResponseReadLimit(s.cfg)
 	seenSSEData := false
 	fallbackTooLarge := false
+	var sseData openAISSEDataAccumulator
+
+	processSSEData := func(dataBytes []byte) {
+		seenSSEData = true
+		fallbackBody.Reset()
+		fallbackBytes = 0
+		mergeOpenAIUsage(&usage, dataBytes)
+		imageCounter.AddSSEData(dataBytes)
+	}
+
+	flushSSEEvent := func() {
+		sseData.Flush(processSSEData)
+	}
 
 	processLine := func(line []byte) {
 		if len(line) == 0 {
@@ -894,16 +907,12 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			}
 		}
 
-		if data, ok := extractOpenAISSEDataLine(strings.TrimRight(string(line), "\r\n")); ok {
-			if data != "" && data != "[DONE]" {
-				seenSSEData = true
-				fallbackBody.Reset()
-				fallbackBytes = 0
-				dataBytes := []byte(data)
-				mergeOpenAIUsage(&usage, dataBytes)
-				imageCounter.AddSSEData(dataBytes)
-			}
-		} else if !seenSSEData && !fallbackTooLarge {
+		trimmedLine := strings.TrimRight(string(line), "\r\n")
+		if _, ok := extractOpenAISSEDataLine(trimmedLine); ok || strings.TrimSpace(trimmedLine) == "" {
+			sseData.AddLine(trimmedLine, processSSEData)
+			return
+		}
+		if !seenSSEData && !fallbackTooLarge {
 			fallbackBytes += int64(len(line))
 			if fallbackBytes <= fallbackLimit {
 				_, _ = fallbackBody.Write(line)
@@ -937,9 +946,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				break
 			}
 			if err != nil {
+				flushSSEEvent()
 				return usage, imageCounter.Count(), firstTokenMs, err
 			}
 		}
+		flushSSEEvent()
 		finalizeFallbackBody()
 		return usage, imageCounter.Count(), firstTokenMs, nil
 	}
@@ -1006,10 +1017,12 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				flushSSEEvent()
 				finalizeFallbackBody()
 				return usage, imageCounter.Count(), firstTokenMs, nil
 			}
 			if ev.err != nil {
+				flushSSEEvent()
 				return usage, imageCounter.Count(), firstTokenMs, ev.err
 			}
 			processLine(ev.line)

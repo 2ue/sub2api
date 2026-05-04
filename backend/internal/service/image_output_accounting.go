@@ -66,14 +66,7 @@ func (c *openAIImageOutputCounter) AddSSEBody(body string) {
 	if c == nil || strings.TrimSpace(body) == "" {
 		return
 	}
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		data, ok := extractOpenAISSEDataLine(line)
-		if !ok || data == "" {
-			continue
-		}
-		c.AddSSEData([]byte(data))
-	}
+	forEachOpenAISSEDataPayload(body, c.AddSSEData)
 }
 
 func (c *openAIImageOutputCounter) addDataArray(data gjson.Result) {
