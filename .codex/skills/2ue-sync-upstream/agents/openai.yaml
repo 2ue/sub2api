@@ -1,0 +1,7 @@
+interface:
+  display_name: "2ue Sync Upstream"
+  short_description: "Sync upstream main into 2ue-main safely"
+  default_prompt: "Use $2ue-sync-upstream to update origin/main from upstream/main, then merge main into 2ue-main and report validation."
+
+policy:
+  allow_implicit_invocation: true
