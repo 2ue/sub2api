@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Usage Report</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Standalone Service</p>
+        <h1>Usage Report</h1>
+      </div>
+      <div class="topbar-meta" id="session-meta">Loading...</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <div class="panel-head">
+          <h2>Query</h2>
+          <div class="muted" id="query-timezone"></div>
+        </div>
+
+        <div class="control-grid">
+          <div>
+            <label>User scope</label>
+            <div class="segmented" id="scope-toggle">
+              <button type="button" class="segmented-option active" data-scope="self">Self</button>
+              <button type="button" class="segmented-option" data-scope="other" id="other-scope-btn">Other</button>
+            </div>
+          </div>
+
+          <div>
+            <label>Start date</label>
+            <input id="start-date" type="date" />
+          </div>
+
+          <div>
+            <label>End date</label>
+            <input id="end-date" type="date" />
+          </div>
+
+          <div class="action-cell">
+            <button id="query-button" type="button" class="primary">Query</button>
+          </div>
+        </div>
+
+        <div class="search-panel hidden" id="search-panel">
+          <label for="user-search">Search users</label>
+          <input id="user-search" type="search" placeholder="Email or username" autocomplete="off" />
+          <div class="search-results" id="search-results"></div>
+        </div>
+
+        <div class="selected-user" id="selected-user"></div>
+      </section>
+
+      <section class="panel summary">
+        <div class="panel-head">
+          <h2>Summary</h2>
+          <div class="muted" id="summary-range">No query yet</div>
+        </div>
+
+        <div class="metrics" id="metrics">
+          <div class="metric">
+            <span class="metric-label">Requests</span>
+            <strong id="metric-requests">-</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Tokens</span>
+            <strong id="metric-tokens">-</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Cost</span>
+            <strong id="metric-cost">-</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Groups</span>
+            <strong id="metric-groups">-</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Platforms</span>
+            <strong id="metric-platforms">-</strong>
+          </div>
+        </div>
+
+        <div class="table-stack">
+          <div class="table-block">
+            <h3>Group Breakdown</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Group</th>
+                    <th>Platform</th>
+                    <th class="num">Requests</th>
+                    <th class="num">Tokens</th>
+                    <th class="num">Cost</th>
+                  </tr>
+                </thead>
+                <tbody id="group-tbody">
+                  <tr><td colspan="5" class="empty">No query yet</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="table-block">
+            <h3>Platform Breakdown</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Platform</th>
+                    <th class="num">Requests</th>
+                    <th class="num">Tokens</th>
+                    <th class="num">Cost</th>
+                  </tr>
+                </thead>
+                <tbody id="platform-tbody">
+                  <tr><td colspan="4" class="empty">No query yet</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="notice hidden" id="error-banner"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
+

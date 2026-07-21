@@ -1,10 +1,13 @@
-.PHONY: build generate test test-unit test-integration test-e2e
+.PHONY: build build-report generate test test-unit test-integration test-e2e
 
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
 build:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
+
+build-report:
+	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/report ./cmd/report
 
 generate:
 	go generate ./ent
