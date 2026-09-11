@@ -16,12 +16,16 @@
         <template v-if="paymentPhase === 'paying'">
           <PaymentStatusPanel
             :order-id="paymentState.orderId"
+            :amount="paymentState.amount"
+            :pay-amount="paymentState.payAmount"
             :qr-code="paymentState.qrCode"
             :expires-at="paymentState.expiresAt"
             :payment-type="paymentState.paymentType"
             :pay-url="paymentState.payUrl"
             :order-type="paymentState.orderType"
             :currency="paymentState.currency || selectedCurrency"
+            :out-trade-no="paymentState.outTradeNo"
+            :mobile-alipay-deep-link="paymentState.alipayMobilePrecreateDeepLink"
             @done="onPaymentDone"
             @success="onPaymentSuccess"
             @settled="onPaymentSettled"
@@ -76,7 +80,7 @@
                   <span class="text-gray-900 dark:text-white">${{ creditedAmount.toFixed(2) }}</span>
                 </div>
                 <p v-if="balanceRechargeMultiplier !== 1" class="border-t border-gray-200 pt-2 text-xs text-gray-500 dark:border-dark-600 dark:text-gray-400">
-                  {{ t('payment.rechargeRatePreview', { usd: balanceRechargeMultiplier.toFixed(2) }) }}
+                  {{ t('payment.rechargeRatePreview', { currency: selectedCurrency, usd: balanceRechargeMultiplier.toFixed(2) }) }}
                 </p>
               </div>
             </div>
@@ -218,7 +222,7 @@
             <img v-if="checkout.help_image_url" :src="checkout.help_image_url" alt=""
               class="h-40 max-w-full cursor-pointer rounded-lg object-contain transition-opacity hover:opacity-80"
               @click="previewImage = checkout.help_image_url" />
-            <p v-if="checkout.help_text" class="text-center text-sm text-gray-500 dark:text-gray-400">{{ checkout.help_text }}</p>
+            <div v-if="checkout.help_text" class="markdown-body w-full overflow-x-auto break-words" v-html="renderedHelpText"></div>
           </div>
         </div>
       </template>
@@ -254,6 +258,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import '@/styles/announcement-markdown.css'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePaymentStore } from '@/stores/payment'
@@ -360,6 +367,7 @@ function emptyPaymentState(): PaymentRecoverySnapshot {
     orderType: '',
     paymentMode: '',
     resumeToken: '',
+    alipayMobilePrecreateDeepLink: false,
     createdAt: 0,
   }
 }
@@ -480,12 +488,14 @@ function onPaymentDone() {
   }
 }
 
-function onPaymentSuccess() {
+async function onPaymentSuccess() {
+  const completedPayment = { ...paymentState.value }
   removeRecoverySnapshot()
   authStore.refreshUser()
   if (paymentState.value.orderType === 'subscription') {
     subscriptionStore.fetchActiveSubscriptions(true).catch(() => {})
   }
+  await redirectToPaymentResult(completedPayment)
 }
 
 function onPaymentSettled() {
@@ -497,6 +507,10 @@ const checkout = ref<CheckoutInfoResponse>({
   methods: {}, global_min: 0, global_max: 0,
   plans: [], balance_disabled: false, balance_recharge_multiplier: 1, subscription_usd_to_cny_rate: 0, recharge_fee_rate: 0, help_text: '', help_image_url: '', stripe_publishable_key: '',
 })
+
+const renderedHelpText = computed(() => DOMPurify.sanitize(
+  marked.parse(checkout.value.help_text || '', { async: false, gfm: true, breaks: false }),
+))
 
 const tabs = computed(() => {
   const result: { key: 'recharge' | 'subscription'; label: string }[] = []
@@ -772,6 +786,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
       isMobile: isMobileDevice(),
       isWechatBrowser: typeof window !== 'undefined' && /MicroMessenger/i.test(window.navigator.userAgent),
       forceQRCode: !!(checkout.value.alipay_force_qrcode && normalizeVisibleMethod(requestType) === 'alipay'),
+      mobilePrecreateDeepLink: checkout.value.alipay_mobile_precreate_deep_link === true,
     })
     if (options.openid) {
       payload.openid = options.openid
@@ -820,6 +835,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
       isMobile: isMobileDevice(),
       isWechatBrowser: typeof window !== 'undefined' && /MicroMessenger/i.test(window.navigator.userAgent),
       forceQRCode: !!(checkout.value.alipay_force_qrcode && visibleMethod === 'alipay'),
+      mobilePrecreateDeepLink: checkout.value.alipay_mobile_precreate_deep_link === true,
       stripePopupUrl: stripeRouteUrl,
       stripeRouteUrl,
       airwallexRouteUrl,

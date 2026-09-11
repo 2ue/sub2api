@@ -309,6 +309,8 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 			"openai_ws_force_http":                         true,
 			"openai_responses_mode":                        "force_chat_completions",
 			"openai_responses_supported":                   false,
+			"codex_fingerprint_mode":                       "session",
+			"codex_fingerprint_seed":                       "11111111-1111-4111-8111-111111111111",
 			"mixed_scheduling":                             true,
 			"unused_large_field":                           "drop-me",
 		},
@@ -321,6 +323,8 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Equal(t, true, got.Extra["openai_ws_force_http"])
 	require.Equal(t, "force_chat_completions", got.Extra["openai_responses_mode"])
 	require.Equal(t, false, got.Extra["openai_responses_supported"])
+	require.Equal(t, "session", got.Extra["codex_fingerprint_mode"])
+	require.Equal(t, "11111111-1111-4111-8111-111111111111", got.Extra["codex_fingerprint_seed"])
 	require.Equal(t, true, got.Extra["mixed_scheduling"])
 	require.Nil(t, got.Extra["unused_large_field"])
 }
@@ -440,6 +444,86 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaAutoPauseFields(t *testing.T) {
 	require.Equal(t, 0.96, got.Extra["auto_pause_7d_threshold"])
 	require.Equal(t, true, got.Extra["auto_pause_5h_disabled"])
 	require.Equal(t, false, got.Extra["auto_pause_7d_disabled"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsQuotaStateForCachedAccounts(t *testing.T) {
+	now := time.Now().UTC()
+	activeStart := now.Add(-time.Hour).Format(time.RFC3339)
+	expiredDailyStart := now.Add(-25 * time.Hour).Format(time.RFC3339)
+	expiredWeeklyStart := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339)
+	weeklyResetDay := float64(now.AddDate(0, 0, 1).Weekday())
+
+	cases := []struct {
+		name          string
+		platform      string
+		typ           string
+		extra         map[string]any
+		quotaExceeded bool
+	}{
+		{
+			name: "anthropic api key total quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{"quota_limit": 10.0, "quota_used": 10.0}, quotaExceeded: true,
+		},
+		{
+			name: "gemini api key rolling daily quota exhausted", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{
+				"quota_daily_limit": 20.0, "quota_daily_used": 20.0,
+				"quota_daily_start": activeStart, "quota_daily_reset_mode": "rolling",
+			}, quotaExceeded: true,
+		},
+		{
+			name: "gemini api key expired rolling daily window", platform: service.PlatformGemini, typ: service.AccountTypeAPIKey,
+			extra: map[string]any{
+				"quota_daily_limit": 20.0, "quota_daily_used": 20.0,
+				"quota_daily_start": expiredDailyStart, "quota_daily_reset_mode": "rolling",
+			},
+		},
+		{
+			name: "bedrock fixed weekly quota exhausted", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{
+				"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": activeStart,
+				"quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay,
+				"quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC",
+			}, quotaExceeded: true,
+		},
+		{
+			name: "bedrock expired fixed weekly window", platform: service.PlatformAnthropic, typ: service.AccountTypeBedrock,
+			extra: map[string]any{
+				"quota_weekly_limit": 30.0, "quota_weekly_used": 30.0, "quota_weekly_start": expiredWeeklyStart,
+				"quota_weekly_reset_mode": "fixed", "quota_weekly_reset_day": weeklyResetDay,
+				"quota_weekly_reset_hour": 0.0, "quota_reset_timezone": "UTC",
+			},
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := make(map[string]any, len(tc.extra)+1)
+			for key, value := range tc.extra {
+				extra[key] = value
+			}
+			extra["unrelated"] = "drop me"
+			account := service.Account{
+				ID: int64(46690 + i), Platform: tc.platform, Type: tc.typ, Extra: extra,
+				Status: service.StatusActive, Schedulable: true,
+			}
+			cache := newSchedulerCacheUnit(t)
+			ctx := context.Background()
+			bucket := service.SchedulerBucket{GroupID: int64(46690 + i), Platform: tc.platform, Mode: service.SchedulerModeSingle}
+			token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+			require.NoError(t, err)
+			require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+
+			snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+			require.NoError(t, err)
+			require.True(t, hit)
+			require.Len(t, snapshot, 1)
+			cached := snapshot[0]
+			require.Equal(t, tc.extra, cached.Extra)
+			require.NotContains(t, cached.Extra, "unrelated")
+			require.Equal(t, tc.quotaExceeded, cached.IsQuotaExceeded())
+			require.Equal(t, !tc.quotaExceeded, cached.IsSchedulable())
+		})
+	}
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsModelRateLimits(t *testing.T) {
@@ -994,4 +1078,46 @@ func schedulerCacheBenchmarkAccounts(size int) []service.Account {
 		}
 	}
 	return accounts
+}
+
+// 调度投影必须保留 OpenAI 透传开关。
+//
+// 候选过滤走 ListSchedulableAccounts，读的是 buildSchedulerMetadataAccount 产出的精简投影；
+// Account.IsModelSupported 又靠 extra 上的透传开关短路 model_mapping 白名单（#4936）。
+// 一旦投影把开关裁掉、却保留了白名单，透传账号在选号阶段就会退回白名单判定并被误判成
+// model_not_supported，而转发阶段（读完整账号）仍按透传工作 —— 表现为"单独测这个账号能通、
+// 走网关却报 no available accounts"。#4936 修的是判定逻辑，这里守的是喂给判定的输入。
+func TestBuildSchedulerMetadataAccount_KeepsOpenAIPassthroughForModelGate(t *testing.T) {
+	for _, key := range []string{"openai_passthrough", "openai_oauth_passthrough"} {
+		t.Run(key, func(t *testing.T) {
+			account := service.Account{
+				ID:       383,
+				Platform: service.PlatformOpenAI,
+				Type:     service.AccountTypeOAuth,
+				Credentials: map[string]any{
+					// 账号从白名单模式切到透传后常见的残留映射，未列出请求的模型。
+					"model_mapping": map[string]any{"gpt-5.5": "gpt-5.5"},
+					"access_token":  "drop-me",
+				},
+				Extra: map[string]any{key: true},
+			}
+			require.True(t, account.IsModelSupported("gpt-5.6-sol"),
+				"前置条件：透传账号本应放行白名单外的模型")
+
+			meta := buildSchedulerMetadataAccount(account)
+
+			// 走一遍真实的序列化/反序列化路径（写入 sched:meta 再由 decodeCachedAccount 读回）。
+			payload, err := json.Marshal(meta)
+			require.NoError(t, err)
+			var restored service.Account
+			require.NoError(t, json.Unmarshal(payload, &restored))
+
+			require.Equal(t, true, restored.Extra[key])
+			require.True(t, restored.IsOpenAIPassthroughEnabled())
+			require.True(t, restored.IsModelSupported("gpt-5.6-sol"),
+				"投影裁掉透传开关会让透传账号在候选过滤阶段被误判为 model_not_supported")
+			// 白名单本身仍需保留：非透传账号依赖它做模型门。
+			require.Equal(t, map[string]any{"gpt-5.5": "gpt-5.5"}, restored.Credentials["model_mapping"])
+		})
+	}
 }

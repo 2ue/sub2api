@@ -6,6 +6,7 @@ import { opsAPI, type OpsRuntimeLogConfig, type OpsSystemLog, type OpsSystemLogS
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import { useAppStore } from '@/stores'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 const appStore = useAppStore()
 const { t } = useI18n()
@@ -40,6 +41,7 @@ const runtimeLoading = ref(false)
 const runtimeSaving = ref(false)
 const runtimeConfig = reactive<OpsRuntimeLogConfig>({
   level: 'info',
+  persist_access_logs: false,
   enable_sampling: false,
   sampling_initial: 100,
   sampling_thereafter: 100,
@@ -230,6 +232,7 @@ const loadRuntimeConfig = async () => {
   try {
     const cfg = await opsAPI.getRuntimeLogConfig()
     runtimeConfig.level = cfg.level
+    runtimeConfig.persist_access_logs = cfg.persist_access_logs
     runtimeConfig.enable_sampling = cfg.enable_sampling
     runtimeConfig.sampling_initial = cfg.sampling_initial
     runtimeConfig.sampling_thereafter = cfg.sampling_thereafter
@@ -248,6 +251,7 @@ const saveRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.updateRuntimeLogConfig({ ...runtimeConfig })
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter
@@ -271,6 +275,7 @@ const resetRuntimeConfig = async () => {
   try {
     const saved = await opsAPI.resetRuntimeLogConfig()
     runtimeConfig.level = saved.level
+    runtimeConfig.persist_access_logs = saved.persist_access_logs
     runtimeConfig.enable_sampling = saved.enable_sampling
     runtimeConfig.sampling_initial = saved.sampling_initial
     runtimeConfig.sampling_thereafter = saved.sampling_thereafter
@@ -312,7 +317,11 @@ const cleanupCurrentFilter = async () => {
     await Promise.all([fetchLogs(), fetchHealth()])
   } catch (err: any) {
     console.error('[OpsSystemLogTable] Failed to cleanup logs', err)
-    appStore.showError(err?.response?.data?.detail || t('admin.ops.systemLogs.cleanupFailed'))
+    appStore.showError(
+      extractApiErrorMessage(err, t('admin.ops.systemLogs.cleanupFailed'), {
+        OPS_SYSTEM_LOG_CLEANUP_FILTER_REQUIRED: t('admin.ops.systemLogs.cleanupFilterRequired')
+      })
+    )
   }
 }
 
@@ -414,6 +423,7 @@ onMounted(async () => {
         <label class="text-xs text-gray-600 dark:text-gray-300">
           {{ t('admin.ops.systemLogs.retentionDays') }}
           <input v-model.number="runtimeConfig.retention_days" type="number" min="1" max="3650" class="input mt-1" />
+          <span class="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">{{ t('admin.ops.systemLogs.retentionDaysHint') }}</span>
         </label>
         <div class="md:col-span-2 xl:col-span-6">
           <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -425,6 +435,10 @@ onMounted(async () => {
               <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
                 <input v-model="runtimeConfig.enable_sampling" type="checkbox" />
                 {{ t('admin.ops.systemLogs.sampling') }}
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <input v-model="runtimeConfig.persist_access_logs" type="checkbox" />
+                {{ t('admin.ops.systemLogs.persistAccessLogs') }}
               </label>
             </div>
             <div class="flex flex-wrap items-center gap-2 lg:justify-end">
@@ -438,6 +452,7 @@ onMounted(async () => {
           </div>
         </div>
       </div>
+      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.systemLogs.persistAccessLogsHint') }}</p>
       <p v-if="health.last_error" class="mt-2 text-xs text-red-600 dark:text-red-400">{{ t('admin.ops.systemLogs.latestWriteError') }} {{ health.last_error }}</p>
     </div>
 
