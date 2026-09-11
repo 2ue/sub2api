@@ -12,6 +12,7 @@ describe('API Client', () => {
 
   beforeEach(async () => {
     localStorage.clear()
+    sessionStorage.clear()
     window.history.replaceState({}, '', '/')
     // 每次测试重新导入以获取干净的模块状态
     vi.resetModules()
@@ -390,6 +391,80 @@ describe('API Client', () => {
       expect(localStorage.getItem('auth_token')).toBe('new-token')
       expect(localStorage.getItem('refresh_token')).toBe('new-refresh-token')
       expect(adapter.mock.calls[1][0].headers.get('Authorization')).toBe('Bearer new-token')
+    })
+
+    it('远程代管会话下本地接口 401 不清除会话也不跳转', async () => {
+      // 远程会话的令牌由 /remote/login 签发，本部署的 JWT 中间件不认它，
+      // 因此 /auth/me、/announcements 这类本地接口必然 401。
+      // 这些 401 与远程会话是否有效无关，不得据此把用户踢回登录页。
+      localStorage.setItem('remote_proxy_mode', '1')
+      localStorage.setItem('auth_token', 'remote-session-token')
+      localStorage.setItem('auth_user', JSON.stringify({ id: 0, role: 'admin' }))
+      // 远程会话没有 refresh_token
+
+      const originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        value: { ...originalLocation, pathname: '/admin/dashboard', href: '/admin/dashboard' },
+        writable: true,
+      })
+
+      apiClient.defaults.adapter = vi.fn().mockRejectedValue({
+        response: {
+          status: 401,
+          data: { code: 'INVALID_TOKEN', message: 'Invalid token' },
+        },
+        config: {
+          url: '/auth/me',
+          headers: { Authorization: 'Bearer remote-session-token' },
+        },
+        code: 'ERR_BAD_REQUEST',
+      })
+
+      await expect(apiClient.get('/auth/me')).rejects.toMatchObject({
+        status: 401,
+        code: 'INVALID_TOKEN',
+      })
+
+      // 会话完好：令牌未被清除，未标记过期，未跳转登录页
+      expect(localStorage.getItem('auth_token')).toBe('remote-session-token')
+      expect(localStorage.getItem('remote_proxy_mode')).toBe('1')
+      expect(sessionStorage.getItem('auth_expired')).toBeNull()
+      expect(window.location.href).toBe('/admin/dashboard')
+
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+      })
+    })
+
+    it('非远程会话下 401 仍然清除会话（不被远程分支误伤）', async () => {
+      localStorage.setItem('auth_token', 'expired-token')
+
+      const originalLocation = window.location
+      Object.defineProperty(window, 'location', {
+        value: { ...originalLocation, pathname: '/dashboard', href: '/dashboard' },
+        writable: true,
+      })
+
+      apiClient.defaults.adapter = vi.fn().mockRejectedValue({
+        response: {
+          status: 401,
+          data: { code: 'TOKEN_EXPIRED', message: 'Token expired' },
+        },
+        config: {
+          url: '/auth/me',
+          headers: { Authorization: 'Bearer expired-token' },
+        },
+        code: 'ERR_BAD_REQUEST',
+      })
+
+      await expect(apiClient.get('/auth/me')).rejects.toBeDefined()
+      expect(localStorage.getItem('auth_token')).toBeNull()
+
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+      })
     })
 
     it('刷新期间换号时旧请求不会清除新会话', async () => {

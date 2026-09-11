@@ -113,6 +113,33 @@ cors:
   allow_credentials: true
 
 # =============================================================================
+# Remote Proxy / 远程代管
+# =============================================================================
+# Make this deployment's admin panel manage ANOTHER sub2api deployment's data.
+# 让本部署的管理面接管另一套 sub2api 部署的数据。
+#
+# The browser only talks to this deployment (same-origin), and this backend
+# forwards admin requests to backend_url with the operator's Admin API Key.
+# The target deployment therefore needs NO code changes and NO CORS setup.
+# 浏览器只访问本站（同源），由本端后端携带管理员 API Key 转发到 backend_url，
+# 因此目标部署无需任何代码改动，也无需配置 CORS。
+#
+# When enabled, this deployment's own admin panel is REPLACED by the remote
+# one. The normal login page (/login) is unchanged and still serves this
+# deployment's own users; admins sign in to the remote panel at /remote-login
+# with an Admin API Key. That page is intentionally not linked from anywhere.
+# 启用后，本部署自身的管理面将被远程管理面取代。普通登录页 /login 不受影响，
+# 仍服务于本部署自己的用户；管理员在 /remote-login 用管理员 API Key 登录。
+# 该页面刻意不做任何入口链接，地址需由部署方自行告知。
+remote_proxy:
+  enabled: false
+  # Target deployment base URL, e.g. https://sub2api2.example.com
+  # 目标部署地址，例如 https://sub2api2.example.com
+  backend_url: ""
+  # Forward timeout in seconds. 转发超时（秒）。
+  timeout: 60
+
+# =============================================================================
 # Security Configuration
 # 安全配置
 # =============================================================================

@@ -6,6 +6,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed, readonly } from 'vue'
 import { authAPI, isTotp2FARequired, passkeyAPI, type LoginResponse } from '@/api'
+import {
+  buildRemoteUser,
+  clearRemoteSession,
+  isRemoteSession,
+  loginWithAdminKey as remoteLoginWithAdminKey,
+  logoutRemote,
+  markRemoteSession
+} from '@/api/remote'
 import type {
   User,
   LoginRequest,
@@ -119,6 +127,12 @@ export const useAuthStore = defineStore('auth', () => {
         user.value = JSON.parse(savedUser)
         refreshTokenValue.value = savedRefreshToken
         tokenExpiresAt.value = savedExpiresAt ? parseInt(savedExpiresAt, 10) : null
+
+        // 远程代管会话没有对应的本地账号，/auth/me 不可用，
+        // 恢复本地保存的身份即可，不做刷新与轮询。
+        if (isRemoteSession()) {
+          return
+        }
 
         // Immediately refresh user data from backend (async, don't block)
         refreshUser().catch((error) => {
@@ -293,6 +307,34 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
+   * 远程代管模式登录：以 Admin API Key 换取远程会话令牌。
+   *
+   * 该会话不对应本部署的任何账号，因此身份信息在本地合成，
+   * 且不启用用户资料轮询与令牌刷新（远程会话无刷新令牌）。
+   */
+  async function loginWithAdminKey(adminKey: string): Promise<User> {
+    try {
+      const response = await remoteLoginWithAdminKey(adminKey)
+
+      const remoteUser = buildRemoteUser() as unknown as User
+      token.value = response.access_token
+      user.value = remoteUser
+      refreshTokenValue.value = null
+      tokenExpiresAt.value = null
+
+      localStorage.setItem(AUTH_TOKEN_KEY, response.access_token)
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(remoteUser))
+      markRemoteSession()
+      clearPendingAuthSession()
+
+      return remoteUser
+    } catch (error) {
+      clearAuth({ preservePendingAuthSession: pendingAuthSession.value !== null })
+      throw error
+    }
+  }
+
+  /**
    * Set auth state from an AuthResponse
    * Internal helper function
    */
@@ -414,6 +456,13 @@ export const useAuthStore = defineStore('auth', () => {
    * Clears all authentication state and persisted data
    */
   async function logout(): Promise<void> {
+    // 远程会话走独立的撤销接口，使服务端不再保留 Admin API Key
+    if (isRemoteSession()) {
+      await logoutRemote()
+      clearAuth()
+      return
+    }
+
     try {
       // Call API logout (revokes refresh token on server)
       await authAPI.logout()
@@ -435,6 +484,12 @@ export const useAuthStore = defineStore('auth', () => {
   async function refreshUser(): Promise<User> {
     if (!token.value) {
       throw new Error('Not authenticated')
+    }
+
+    // 远程代管会话不对应本部署账号，/auth/me 必然失败；
+    // 直接返回本地身份，避免 401 把会话清掉。
+    if (isRemoteSession() && user.value) {
+      return user.value
     }
 
     try {
@@ -476,6 +531,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem(AUTH_USER_KEY)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
     localStorage.removeItem(TOKEN_EXPIRES_AT_KEY)
+    clearRemoteSession()
 
     if (options?.preservePendingAuthSession) {
       pendingAuthSession.value = getPersistedPendingAuthSession()
@@ -504,6 +560,7 @@ export const useAuthStore = defineStore('auth', () => {
     // Actions
     login,
     loginWithPasskey,
+    loginWithAdminKey,
     login2FA,
     register,
     setToken,

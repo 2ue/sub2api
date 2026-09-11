@@ -1,0 +1,55 @@
+# =============================================================================
+# Sub2API Docker Compose - Dependencies Only / 仅依赖服务
+# =============================================================================
+# 只启动 PostgreSQL 与 Redis，并把端口映射到宿主机，供本地直接运行的
+# 后端进程连接。用于在本地调试后端代码时省去构建镜像的开销。
+#
+# Usage:
+#   cd deploy
+#   docker compose -f docker-compose.deps.yml up -d
+#   docker compose -f docker-compose.deps.yml down
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: sub2api-postgres-deps
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - sub2api_deps_postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sub2api}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sub2api_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-sub2api}
+      - PGDATA=/var/lib/postgresql/data
+      - TZ=${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:8-alpine
+    container_name: sub2api-redis-deps
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - sub2api_deps_redis:/data
+    command: redis-server --save 60 1 --appendonly yes --appendfsync everysec
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  sub2api_deps_postgres:
+  sub2api_deps_redis:

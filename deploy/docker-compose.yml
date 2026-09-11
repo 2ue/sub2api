@@ -102,6 +102,24 @@ services:
       - SETUP_MIGRATION_TIMEOUT_SECONDS=${SETUP_MIGRATION_TIMEOUT_SECONDS:-0}
 
       # =======================================================================
+      # Remote Proxy / 远程代管（可选）
+      # =======================================================================
+      # Let this deployment's admin panel manage ANOTHER sub2api deployment.
+      # The browser stays same-origin and this backend forwards admin requests
+      # with the Admin API Key, so the target needs no changes and no CORS.
+      # 让本部署的管理面接管另一套 sub2api 的数据：浏览器保持同源，由本端后端
+      # 携带管理员 API Key 转发，因此目标部署无需改动、也无需配置跨域。
+      #
+      # When enabled, this deployment's own admin panel is replaced by the
+      # remote one. /login is unchanged; admins sign in at /remote-login with
+      # an Admin API Key (that page is intentionally not linked from anywhere).
+      # 启用后本部署自身的管理面被远程管理面取代。/login 不受影响；管理员在
+      # /remote-login 用管理员 API Key 登录（该页刻意不做入口链接）。
+      - REMOTE_PROXY_ENABLED=${REMOTE_PROXY_ENABLED:-false}
+      - REMOTE_PROXY_BACKEND_URL=${REMOTE_PROXY_BACKEND_URL:-}
+      - REMOTE_PROXY_TIMEOUT=${REMOTE_PROXY_TIMEOUT:-60}
+
+      # =======================================================================
       # TOTP (2FA) Configuration
       # =======================================================================
       # IMPORTANT: Set a fixed encryption key for TOTP secrets. If left empty,
